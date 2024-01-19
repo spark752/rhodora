@@ -1,0 +1,32 @@
+[package]
+name = "rhodora"
+version = "0.1.1"
+edition = "2021"
+
+# Enable a little optimization in debug mode
+[profile.dev]
+opt-level = 1
+
+[dependencies]
+vulkano = { path = "../vulkano/vulkano", version = "0.33.0" }
+vulkano-win = { path = "../vulkano/vulkano-win", version = "0.33.0" }
+vulkano-shaders = { path = "../vulkano/vulkano-shaders", version = "0.33.0" }
+winit = "0.28.0"
+bytemuck = "1.12.3"
+nalgebra-glm = "0.18.0"
+nalgebra = { version = "0.32.0", features = ["serde-serialize"] }
+tobj = "3.2.3"
+image = { version = "0.24.0", default-features = false, features = ["png"] }
+smallvec = "1.10.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9.0"
+log = "0.4.8"
+parking_lot = "0.12.1"
+
+# For egui integration
+ahash = "0.8.1"
+egui = "0.21.0"
+egui-winit = "0.21.0"
+
+[dev-dependencies]
+env_logger = "0.10.0"
