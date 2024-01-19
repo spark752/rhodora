@@ -8,9 +8,9 @@ edition = "2021"
 opt-level = 1
 
 [dependencies]
-vulkano = { path = "../vulkano/vulkano", version = "0.33.0" }
-vulkano-win = { path = "../vulkano/vulkano-win", version = "0.33.0" }
-vulkano-shaders = { path = "../vulkano/vulkano-shaders", version = "0.33.0" }
+vulkano = { version = "0.33.0" }
+vulkano-win = { version = "0.33.0" }
+vulkano-shaders = { version = "0.33.0" }
 winit = "0.28.0"
 bytemuck = "1.12.3"
 nalgebra-glm = "0.18.0"
