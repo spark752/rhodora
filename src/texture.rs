@@ -1,6 +1,6 @@
 use crate::dds;
-use crate::rh_error::*;
-use crate::types::*;
+use crate::rh_error::RhError;
+use crate::types::TextureView;
 use ahash::AHashMap;
 use image::io::Reader;
 #[allow(unused_imports)]
@@ -16,10 +16,10 @@ use vulkano::{
 };
 
 /// Texture caching in a multithread friendly way.
-/// Uses ahash::AHashMap in place of std::collections::HashMap only because
+/// Uses `ahash::AHashMap` in place of `std::collections::HashMap` only because
 /// ahash is already a dependency for egui integration.
 /// This struct may be sent across threads, so the cache is wrapped in a
-/// parking_lot::Mutex. This was selected over std::Mutex only because
+/// `parking_lot::Mutex`. This was selected over `std::Mutex` only because
 /// Vulkano and other packages already depend on it.
 pub struct TextureManager {
     mem_allocator: Arc<StandardMemoryAllocator>,
@@ -37,6 +37,9 @@ impl TextureManager {
 
     /// Caches textures for improved performance. Loads default texture if
     /// filename is empty.
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn load<T>(
         &self,
         filename: &str,
@@ -57,12 +60,16 @@ impl TextureManager {
                 load_texture(filename, &self.mem_allocator, cbb)
             }?;
             cache.insert(filename.to_string(), texture_view.clone());
+            drop(cache); // Probably makes no difference but makes clippy happy
             Ok(texture_view)
         }
     }
 }
 
-/// Free functions which can be called in place of a caching TextureManager.
+// Free functions which can be called in place of a caching `TextureManager`.
+
+/// # Errors
+/// May return `RhError`
 pub fn load_texture<T>(
     filename: &str,
     mem_allocator: &(impl MemoryAllocator + ?Sized),
@@ -79,6 +86,8 @@ pub fn load_texture<T>(
     }
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn load_png<T>(
     filename: &str,
     mem_allocator: &(impl MemoryAllocator + ?Sized),
@@ -104,6 +113,8 @@ pub fn load_png<T>(
     Ok(ImageView::new_default(imm_image)?)
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn load_default_texture<T>(
     mem_allocator: &(impl MemoryAllocator + ?Sized),
     cbb: &mut AutoCommandBufferBuilder<T>,

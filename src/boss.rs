@@ -1,15 +1,18 @@
 use crate::{
-    memory::*,
+    memory::Memory,
     obj_format::{ObjBatch, ObjToLoad},
-    obj_manager::*,
+    obj_manager::ObjManager,
     pbr_lights::PbrLightTrait,
-    pbr_pipeline::*,
+    pbr_pipeline::PbrPipeline,
     postprocess::PostProcess,
-    rh_error::*,
+    rh_error::RhError,
     texture::TextureManager,
-    types::*,
+    types::{
+        AttachmentView, CameraTrait, DeviceAccess, KeyboardHandler,
+        RenderFormat, SwapchainView, TransferFuture,
+    },
     util,
-    vk_window::*,
+    vk_window::{VkWindow, VkWindowProperties},
 };
 use log::{error, info};
 use std::time::Instant;
@@ -117,6 +120,9 @@ pub struct Boss {
 }
 
 impl Boss {
+    /// # Errors
+    /// May return `RhError`
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         event_loop: &EventLoop<()>,
         properties: Option<VkWindowProperties>,
@@ -264,6 +270,8 @@ impl Boss {
         })
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn resize(&mut self) -> Result<(), RhError> {
         let dimensions = self.window.dimensions()?;
         self.viewport.dimensions = dimensions.into();
@@ -284,6 +292,8 @@ impl Boss {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn recreate(&mut self) -> Result<(), RhError> {
         let dimensions = self.window.dimensions()?;
         let (new_swapchain, new_images) =
@@ -309,6 +319,8 @@ impl Boss {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn create_primary_cbb(
         &self,
     ) -> Result<
@@ -332,6 +344,8 @@ impl Boss {
     }
 
     #[allow(clippy::type_complexity)]
+    /// # Errors
+    /// May return `RhError`
     pub fn acquire_next_image(
         &mut self,
     ) -> Result<(u32, SwapchainAcquireFuture), RhError> {
@@ -374,6 +388,8 @@ impl Boss {
         )
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn render_pass_postprocess<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -393,6 +409,8 @@ impl Boss {
         self.postprocess.draw(cbb)
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn render_pass_main<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -429,6 +447,8 @@ impl Boss {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn render_pass_end<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -437,7 +457,7 @@ impl Boss {
         Ok(())
     }
 
-    pub fn render_format(&self) -> RenderFormat {
+    pub const fn render_format(&self) -> RenderFormat {
         RenderFormat {
             colour_format: self.colour_format,
             depth_format: self.depth_format,
@@ -445,6 +465,8 @@ impl Boss {
         }
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn render_start(&mut self) -> Result<Action, RhError> {
         let mut signal_resize = false;
 
@@ -490,8 +512,11 @@ impl Boss {
         })
     }
 
-    /// Wait for before_future, then submit a primary command queue, then
+    /// Wait for `before_future`, then submit a primary command queue, then
     /// present to Vulkan
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn submit_and_present(
         &mut self,
         cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
@@ -510,7 +535,7 @@ impl Boss {
             before_future.join(
                 self.frame_control.fences[self.frame_control.fence_index]
                     .take()
-                    .unwrap(),
+                    .ok_or(RhError::FutureFlush)?, // FIXME incorrect error
             )
         } else {
             before_future.join(self.now_future())
@@ -524,7 +549,10 @@ impl Boss {
         self.present(after_future.boxed(), image_index)
     }
 
-    /// Wait for before_future then present to Vulkan
+    /// Wait for `before_future` then present to Vulkan
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn present(
         &mut self,
         before_future: Box<dyn GpuFuture>,
@@ -570,6 +598,8 @@ impl Boss {
         }
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load_obj<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -586,6 +616,8 @@ impl Boss {
         )
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn process_obj<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -604,6 +636,8 @@ impl Boss {
         )
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load_batch<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -620,6 +654,26 @@ impl Boss {
         )
     }
 
+    /// # Errors
+    /// May return `RhError`
+    pub fn load_gltf<T>(
+        &mut self,
+        cbb: &mut AutoCommandBufferBuilder<T>,
+        obj: &ObjToLoad,
+    ) -> Result<usize, RhError> {
+        self.obj_manager.load_gltf(
+            DeviceAccess {
+                device: self.window.device().clone(),
+                set_allocator: &self.memory.set_allocator,
+                cbb,
+            },
+            &self.pbr_pipeline,
+            obj,
+        )
+    }
+
+    /// # Errors
+    /// May return `RhError`
     pub fn draw_objects<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -631,6 +685,7 @@ impl Boss {
         )
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn start_loop(
         &mut self,
         tick_rate: f32,
@@ -649,6 +704,10 @@ impl Boss {
         };
     }
 
+    /// # Panics
+    /// Panics if the number of microseconds since the last tick can not fit
+    /// into an `i64`. This could happen if you have over 292,000 years between
+    /// ticks.
     pub fn handle_event(
         &mut self,
         event: &Event<()>,
@@ -697,8 +756,10 @@ impl Boss {
 
             Event::MainEventsCleared => {
                 if let Some(timing) = &mut self.timing {
-                    let delta =
-                        timing.previous_tick.elapsed().as_micros() as i64;
+                    let delta = i64::try_from(
+                        timing.previous_tick.elapsed().as_micros(),
+                    )
+                    .expect("time overflowed");
                     timing.time_acc_us += delta;
                     timing.previous_tick = Instant::now();
                     if timing.time_acc_us >= timing.tick_interval_us {
@@ -744,10 +805,12 @@ impl Boss {
         None
     }
 
-    pub fn graphics_queue(&self) -> &Arc<Queue> {
+    pub const fn graphics_queue(&self) -> &Arc<Queue> {
         self.window.graphics_queue()
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn start_transfer(
         &self,
         cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
@@ -755,11 +818,11 @@ impl Boss {
         util::start_transfer(cbb, self.graphics_queue().clone())
     }
 
-    pub fn device(&self) -> &Arc<Device> {
+    pub const fn device(&self) -> &Arc<Device> {
         self.window.device()
     }
 
-    pub fn texture_manager(&self) -> &Arc<TextureManager> {
+    pub const fn texture_manager(&self) -> &Arc<TextureManager> {
         self.obj_manager.texture_manager()
     }
 

@@ -1,6 +1,9 @@
 use crate::pbr_lights::PbrLightTrait;
-use crate::rh_error::*;
-use crate::types::{vertex::*, *};
+use crate::rh_error::RhError;
+use crate::types::{
+    vertex::{Interleaved, Position},
+    CameraTrait, RenderFormat,
+};
 use crate::util;
 #[allow(unused_imports)]
 use nalgebra_glm as glm;
@@ -50,6 +53,8 @@ pub struct PbrPipeline {
 }
 
 impl PbrPipeline {
+    /// # Errors
+    /// May return `RhError`
     pub fn new(
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
@@ -131,6 +136,8 @@ impl PbrPipeline {
         self.pipeline.layout()
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn start_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,

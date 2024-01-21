@@ -1,5 +1,7 @@
-use crate::rh_error::*;
-use crate::types::*;
+// `vs_quad` and `fs_quad` are not that similar, but clippy disagrees
+#![allow(clippy::similar_names)]
+use crate::rh_error::RhError;
+use crate::types::DeviceAccess;
 use crate::util;
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
@@ -59,7 +61,10 @@ pub struct PostProcess {
 }
 
 impl PostProcess {
-    // Records commands to cbb parameter that must be submitted before rendering
+    /// Records commands to cbb parameter that must be submitted before rendering
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn new<T>(
         device_access: DeviceAccess<T>,
         mem_allocator: &(impl MemoryAllocator + ?Sized),
@@ -153,22 +158,28 @@ impl PostProcess {
         })
     }
 
+    #[must_use]
     pub fn pipeline(&self) -> Arc<GraphicsPipeline> {
         self.pipeline.clone()
     }
 
+    #[must_use]
     pub fn sampler(&self) -> Arc<Sampler> {
         self.sampler.clone()
     }
 
+    #[must_use]
     pub fn image_view(&self) -> Arc<ImageView<AttachmentImage>> {
         self.image_view.clone()
     }
 
+    #[must_use]
     pub fn descriptor_set(&self) -> Arc<PersistentDescriptorSet> {
         self.descriptor_set.clone()
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn resize(
         &mut self,
         mem_allocator: &(impl MemoryAllocator + ?Sized),
@@ -186,6 +197,8 @@ impl PostProcess {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn draw<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,

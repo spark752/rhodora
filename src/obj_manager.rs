@@ -1,9 +1,12 @@
 use crate::{
-    obj_format::*,
-    pbr_pipeline::*,
-    rh_error::*,
+    obj_format::{ObjBatch, ObjLoaded, ObjMaterial, ObjToLoad},
+    pbr_pipeline::{PbrPipeline, PushConstantData, UniformM},
+    rh_error::RhError,
     texture::TextureManager,
-    types::{vertex::*, *},
+    types::{
+        vertex::{Interleaved, Position, VertexBuffers},
+        DeviceAccess, Submesh, TextureView,
+    },
     util,
 };
 use log::info;
@@ -52,6 +55,8 @@ pub struct DeviceVertexBuffers {
 }
 
 impl DeviceVertexBuffers {
+    /// # Errors
+    /// May return `RhError`
     pub fn new<T>(
         _cbb: &mut AutoCommandBufferBuilder<T>,
         mem_allocator: Arc<StandardMemoryAllocator>, // Not a reference
@@ -126,6 +131,8 @@ pub struct ObjManager {
 }
 
 impl ObjManager {
+    /// # Errors
+    /// May return `RhError`
     pub fn new(
         texture_manager: Arc<TextureManager>,
         mem_allocator: Arc<StandardMemoryAllocator>,
@@ -139,10 +146,15 @@ impl ObjManager {
         })
     }
 
-    pub fn texture_manager(&self) -> &Arc<TextureManager> {
+    /// # Errors
+    /// May return `RhError`
+    #[must_use]
+    pub const fn texture_manager(&self) -> &Arc<TextureManager> {
         &self.texture_manager
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load_batch<T>(
         &mut self,
         device_access: DeviceAccess<T>,
@@ -152,6 +164,8 @@ impl ObjManager {
         self.load_batch_option(device_access, pbr_pipeline, batch, None)
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load_batch_option<T>(
         &mut self,
         device_access: DeviceAccess<T>,
@@ -222,20 +236,24 @@ impl ObjManager {
         })
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load_batch_materials<T>(
         &mut self,
         objects: &[ObjLoaded],
         cbb: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<Vec<TexMaterial>, RhError> {
         let mut tex_materials = Vec::new();
-        for obj_loaded in objects.iter() {
-            for m in obj_loaded.materials.iter() {
+        for obj_loaded in objects {
+            for m in &obj_loaded.materials {
                 tex_materials.push(self.load_material(m, cbb)?);
             }
         }
         Ok(tex_materials)
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load<T>(
         &mut self,
         device_access: DeviceAccess<T>,
@@ -249,6 +267,8 @@ impl ObjManager {
         Ok(ret[0])
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn process<T>(
         &mut self,
         device_access: DeviceAccess<T>,
@@ -259,6 +279,21 @@ impl ObjManager {
         // Convenience function to load a one .obj file batch
         let mut batch = ObjBatch::new();
         batch.process(obj, load_result)?;
+        let ret = self.load_batch(device_access, pbr_pipeline, batch)?;
+        Ok(ret[0])
+    }
+
+    /// # Errors
+    /// May return `RhError`
+    pub fn load_gltf<T>(
+        &mut self,
+        device_access: DeviceAccess<T>,
+        pbr_pipeline: &PbrPipeline,
+        obj: &ObjToLoad,
+    ) -> Result<usize, RhError> {
+        // Convenience function to load a one gltf file batch
+        let mut batch = ObjBatch::new();
+        batch.load_gltf(obj)?;
         let ret = self.load_batch(device_access, pbr_pipeline, batch)?;
         Ok(ret[0])
     }
@@ -277,10 +312,13 @@ impl ObjManager {
         }
     }
 
+    #[must_use]
     pub fn matrix_ref(&self, index: usize) -> &glm::Mat4 {
         &self.models[index].matrix
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn draw_all<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -293,6 +331,8 @@ impl ObjManager {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn draw<T>(
         &self,
         index: usize,
@@ -383,6 +423,9 @@ impl ObjManager {
 }
 
 /// Convert a batch of meshes into the format needed by the Object Manager
+///
+/// # Errors
+/// May return `RhError`
 pub fn convert_batch_meshes(
     objs_loaded: &[ObjLoaded],
 ) -> Result<Vec<Mesh>, RhError> {
@@ -398,10 +441,10 @@ pub fn convert_batch_meshes(
     let mut next_index = 0;
     let mut next_vertex = 0;
     let mut next_material_id = 0;
-    for obj_loaded in objs_loaded.iter() {
+    for obj_loaded in objs_loaded {
         // Collect submeshes for this mesh
         let mut submeshes = Vec::new();
-        for sub in obj_loaded.submeshes.iter() {
+        for sub in &obj_loaded.submeshes {
             submeshes.push(Submesh {
                 index_count: sub.index_count,
                 first_index: sub.first_index + next_index,
@@ -422,13 +465,10 @@ pub fn convert_batch_meshes(
         let submeshes_len = submeshes.len(); // To satisfy borrow checker
         meshes.push(Mesh {
             submeshes,
-            order: if let Some(order) = &obj_loaded.order_option {
-                // Copy the provided rendering order
-                order.clone()
-            } else {
-                // Create a default rendering order
-                Vec::from_iter(0..submeshes_len)
-            },
+            order: obj_loaded.order_option.as_ref().map_or_else(
+                || (0..submeshes_len).collect::<Vec<_>>(),
+                Clone::clone,
+            ),
         });
 
         // Update material id offset. Normally there will be one per

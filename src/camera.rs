@@ -56,6 +56,7 @@ impl CameraTrait for Camera {
 }
 
 impl Camera {
+    #[must_use]
     pub fn new(properties: CameraProperties) -> Self {
         Self {
             aspect_ratio: properties.aspect_ratio,
@@ -94,6 +95,7 @@ impl Camera {
     }
 
     /// Calculate Model View matrix for a given Model matrix
+    #[must_use]
     pub fn mv(&self, m: &glm::Mat4) -> glm::Mat4 {
         self.view * m
     }

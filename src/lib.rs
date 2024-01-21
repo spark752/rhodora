@@ -2,6 +2,7 @@ pub mod boss;
 pub mod camera;
 pub mod dds;
 pub mod egui_integration;
+pub mod gltf_format;
 pub mod keyboard;
 pub mod memory;
 pub mod obj_format;

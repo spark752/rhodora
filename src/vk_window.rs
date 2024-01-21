@@ -1,4 +1,4 @@
-use crate::rh_error::*;
+use crate::rh_error::RhError;
 use log::info;
 use std::sync::Arc;
 use vulkano::{
@@ -15,7 +15,7 @@ use vulkano::{
         },
         Instance, InstanceCreateInfo, InstanceExtensions,
     },
-    swapchain::{Surface, SurfaceCapabilities},
+    swapchain::{Surface, SurfaceCapabilities, SurfaceInfo},
     VulkanLibrary,
 };
 use vulkano_win::VkSurfaceBuild; // build_vk_surface impl
@@ -40,19 +40,26 @@ pub struct VkWindow {
 }
 
 impl VkWindow {
+    /// # Errors
+    /// May return `RhError`
+    ///
+    /// # Panics
+    /// Panics if some `usize` value does not fit into `u32` parameters of
+    /// vulkano functions. These are usually very small values so this is
+    /// not expected to happen.
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         properties: Option<VkWindowProperties>,
         event_loop: &EventLoop<()>,
         debug_layers: bool,
     ) -> Result<Self, RhError> {
-        let properties = if let Some(wp) = properties {
-            wp
-        } else {
-            VkWindowProperties {
+        let properties = properties.map_or_else(
+            || VkWindowProperties {
                 dimensions: [640, 480],
-                title: "VK Greenbell".to_string(),
-            }
-        };
+                title: "Rhodora".to_string(),
+            },
+            |wp| wp,
+        );
         let library = VulkanLibrary::new()?;
         let required_extensions = InstanceExtensions {
             ext_debug_utils: debug_layers,
@@ -152,10 +159,14 @@ impl VkWindow {
                     .enumerate()
                     .position(|(i, q)| {
                         q.queue_flags.intersects(QueueFlags::GRAPHICS)
-                            && p.surface_support(i as u32, &surface)
-                                .unwrap_or(false)
+                            && p.surface_support(
+                                u32::try_from(i)
+                                    .expect("queue_family_index out of range"),
+                                &surface,
+                            )
+                            .unwrap_or(false)
                     })
-                    .map(|i| (p, i as u32))
+                    .map(|i| (p, u32::try_from(i).expect("value out of range")))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
                 PhysicalDeviceType::DiscreteGpu => 0,
@@ -195,33 +206,42 @@ impl VkWindow {
         })
     }
 
-    pub fn physical(&self) -> &Arc<PhysicalDevice> {
+    #[must_use]
+    pub const fn physical(&self) -> &Arc<PhysicalDevice> {
         &self.physical
     }
 
-    pub fn device(&self) -> &Arc<Device> {
+    #[must_use]
+    pub const fn device(&self) -> &Arc<Device> {
         &self.device
     }
 
-    pub fn graphics_queue(&self) -> &Arc<Queue> {
+    #[must_use]
+    pub const fn graphics_queue(&self) -> &Arc<Queue> {
         &self.graphics_queue
     }
 
-    pub fn instance(&self) -> &Arc<Instance> {
+    #[must_use]
+    pub const fn instance(&self) -> &Arc<Instance> {
         &self.instance
     }
 
-    pub fn surface(&self) -> &Arc<Surface> {
+    #[must_use]
+    pub const fn surface(&self) -> &Arc<Surface> {
         &self.surface
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn surface_caps(
         &self,
     ) -> Result<SurfaceCapabilities, PhysicalDeviceError> {
         self.physical
-            .surface_capabilities(&self.surface, Default::default())
+            .surface_capabilities(&self.surface, SurfaceInfo::default())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn format_properties(
         &self,
         format: Format,
@@ -229,6 +249,8 @@ impl VkWindow {
         self.physical.format_properties(format)
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn winit_window(&self) -> Result<&WinitWindow, RhError> {
         self.surface
             .object()
@@ -237,6 +259,8 @@ impl VkWindow {
             .ok_or(RhError::WindowNotFound)
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn dimensions(&self) -> Result<PhysicalSize<u32>, RhError> {
         Ok(self.winit_window()?.inner_size())
     }

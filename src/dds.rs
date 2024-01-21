@@ -1,5 +1,5 @@
-use crate::rh_error::*;
-use crate::types::*;
+use crate::rh_error::RhError;
+use crate::types::TextureView;
 use log::debug;
 use smallvec::SmallVec;
 use std::fs::File;
@@ -20,10 +20,10 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryUsage},
 };
 
-const MAGIC_HEADER: u32 = 0x20534444;
-const FOURCC_DXT1: u32 = 0x31545844;
-const FOURCC_DXT5: u32 = 0x35545844;
-const FOURCC_DX10: u32 = 0x30315844;
+const MAGIC_HEADER: u32 = 0x2053_4444;
+const FOURCC_DXT1: u32 = 0x3154_5844;
+const FOURCC_DXT5: u32 = 0x3554_5844;
+const FOURCC_DX10: u32 = 0x3031_5844;
 const DXGI_BC7_UNORM: u32 = 98;
 const DXGI_BC7_UNORM_SRGB: u32 = 99;
 
@@ -54,6 +54,9 @@ fn dword(slice: &[u8]) -> Result<u32, RhError> {
     ))
 }
 
+/// # Errors
+/// May return `RhError`
+#[allow(clippy::too_many_lines)]
 pub fn load<T>(
     file_path: &str,
     mem_allocator: &(impl MemoryAllocator + ?Sized),
@@ -158,8 +161,9 @@ pub fn load<T>(
                 match ext.dxgi_format {
                     // Test files used the non sRGB format value but the
                     // data was clearly intended to be sRGB
-                    DXGI_BC7_UNORM => (Format::BC7_SRGB_BLOCK, 16),
-                    DXGI_BC7_UNORM_SRGB => (Format::BC7_SRGB_BLOCK, 16),
+                    DXGI_BC7_UNORM | DXGI_BC7_UNORM_SRGB => {
+                        (Format::BC7_SRGB_BLOCK, 16)
+                    }
                     _ => {
                         return Err(RhError::UnsupportedFormat);
                     }
@@ -261,7 +265,7 @@ pub fn load<T>(
         // Calculate the location of the next mipmap in the compressed data
         let pw = std::cmp::max((level_dimensions[0] + 3) / 4, 1);
         let ph = std::cmp::max((level_dimensions[1] + 3) / 4, 1);
-        offset += (pw * ph * block_size) as u64;
+        offset += u64::from(pw * ph * block_size);
     }
     debug!("regions vector len {}", regions.len());
     cbb.copy_buffer_to_image(CopyBufferToImageInfo {

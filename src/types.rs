@@ -53,6 +53,7 @@ pub mod vertex {
     }
 
     impl VertexBuffers {
+        #[must_use]
         pub fn new() -> Self {
             Self {
                 positions: Vec::new(),

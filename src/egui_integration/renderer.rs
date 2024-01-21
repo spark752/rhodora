@@ -8,6 +8,9 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
+// Allow conversions of small value `u32` to `f32` to work with different APIs
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+
 use std::sync::Arc;
 
 use crate::memory::Memory;
@@ -36,8 +39,8 @@ use vulkano::{
     device::Queue,
     format::{Format, NumericType},
     image::{
-        view::ImageView, ImageAccess, ImageLayout, ImageUsage,
-        ImageViewAbstract, ImmutableImage, SampleCount,
+        view::ImageView, ImageAccess, ImageCreateFlags, ImageLayout,
+        ImageUsage, ImageViewAbstract, ImmutableImage, SampleCount,
     },
     memory::allocator::{
         AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator,
@@ -100,15 +103,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(
-        gfx_queue: Arc<Queue>,
-        format: Format,
-    ) -> Result<Renderer, RhError> {
-        let need_srgb_conv = if let Some(t) = format.type_color() {
-            t == NumericType::UNORM
-        } else {
-            false
-        };
+    /// # Errors
+    /// May return `RhError`
+    pub fn new(gfx_queue: Arc<Queue>, format: Format) -> Result<Self, RhError> {
+        let need_srgb_conv = format
+            .type_color()
+            .map_or(false, |t| t == NumericType::UNORM);
         let memory = Memory::new(gfx_queue.device());
         let (vertex_buffer_pool, index_buffer_pool) =
             Self::create_buffers(&memory.memory_allocator);
@@ -123,7 +123,7 @@ impl Renderer {
                 ..Default::default()
             },
         )?;
-        Ok(Renderer {
+        Ok(Self {
             gfx_queue,
             format,
             vertex_buffer_pool,
@@ -225,7 +225,11 @@ impl Renderer {
         )?)
     }
 
-    /// Registers a user texture. User texture needs to be unregistered when it is no longer needed
+    /// Registers a user texture. User texture needs to be unregistered when
+    /// it is no longer needed.
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn register_image(
         &mut self,
         image: Arc<dyn ImageViewAbstract + Send + Sync>,
@@ -234,7 +238,7 @@ impl Renderer {
             .pipeline
             .layout()
             .set_layouts()
-            .get(0)
+            .first()
             .ok_or(RhError::PipelineError);
         let desc_set = self.sampled_image_desc_set(layout?, image.clone());
         let id = egui::TextureId::User(self.next_native_tex_id);
@@ -250,6 +254,7 @@ impl Renderer {
         self.texture_images.remove(&texture_id);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn update_texture(
         &mut self,
         texture_id: egui::TextureId,
@@ -266,7 +271,7 @@ impl Renderer {
                 image
                     .pixels
                     .iter()
-                    .flat_map(|color| color.to_array())
+                    .flat_map(egui::Color32::to_array)
                     .collect()
             }
             egui::ImageData::Font(image) => image
@@ -300,7 +305,7 @@ impl Renderer {
             ImageUsage::TRANSFER_DST
                 | ImageUsage::TRANSFER_SRC
                 | ImageUsage::SAMPLED,
-            Default::default(),
+            ImageCreateFlags::default(),
             ImageLayout::ShaderReadOnlyOptimal,
             Some(self.gfx_queue.queue_family_index()),
         )?;
@@ -361,7 +366,7 @@ impl Renderer {
                 .pipeline
                 .layout()
                 .set_layouts()
-                .get(0)
+                .first()
                 .ok_or(RhError::PipelineError);
             let font_desc_set =
                 self.sampled_image_desc_set(layout?, font_image.clone());
@@ -421,10 +426,10 @@ impl Renderer {
                 position: [v.pos.x, v.pos.y],
                 tex_coords: [v.uv.x, v.uv.y],
                 color: [
-                    v.color.r() as f32 / 255.0,
-                    v.color.g() as f32 / 255.0,
-                    v.color.b() as f32 / 255.0,
-                    v.color.a() as f32 / 255.0,
+                    f32::from(v.color.r()) / 255.0,
+                    f32::from(v.color.g()) / 255.0,
+                    f32::from(v.color.b()) / 255.0,
+                    f32::from(v.color.a()) / 255.0,
                 ],
             })
             .collect();
@@ -441,6 +446,8 @@ impl Renderer {
         Ok((vertex_buff, index_buff))
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn draw<T>(
         &mut self,
         clipped_meshes: &[ClippedPrimitive],
@@ -536,7 +543,14 @@ impl Renderer {
                         )
                         .bind_vertex_buffers(0, vertices.clone())
                         .bind_index_buffer(indices.clone())
-                        .draw_indexed(indices.len() as u32, 1, 0, 0, 0)?;
+                        .draw_indexed(
+                            u32::try_from(indices.len())
+                                .map_err(|_| RhError::IndexCountTooLarge)?,
+                            1,
+                            0,
+                            0,
+                            0,
+                        )?;
                 }
                 Primitive::Callback(_callback) => {
                     // FIXME Figure this out
@@ -561,7 +575,7 @@ impl Renderer {
         self.gfx_queue.clone()
     }
 
-    pub fn allocators(&self) -> &Memory {
+    pub const fn allocators(&self) -> &Memory {
         &self.memory
     }
 }

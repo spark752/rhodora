@@ -12,7 +12,7 @@ use super::{
     utils::{immutable_texture_from_bytes, immutable_texture_from_file},
 };
 use crate::rh_error::RhError;
-use egui::{ClippedPrimitive, TexturesDelta};
+use egui::{ClippedPrimitive, Context, TexturesDelta};
 use egui_winit::winit::event_loop::EventLoopWindowTarget;
 use std::sync::Arc;
 use vulkano::{
@@ -20,11 +20,13 @@ use vulkano::{
     device::Queue,
     format::{Format, NumericType},
     image::{ImageViewAbstract, SampleCount},
-    swapchain::Surface,
+    swapchain::{Surface, SurfaceInfo},
 };
 use winit::event::Event;
 use winit::window::Window;
 
+/// # Panics
+/// Panics and should be fixed so that it won't
 fn get_surface_image_format(
     surface: &Arc<Surface>,
     preferred_format: Option<Format>,
@@ -34,7 +36,7 @@ fn get_surface_image_format(
         gfx_queue
             .device()
             .physical_device()
-            .surface_formats(surface, Default::default())
+            .surface_formats(surface, SurfaceInfo::default())
             .unwrap()
             .iter()
             .find(|f| f.0.type_color().unwrap() == NumericType::SRGB)
@@ -56,7 +58,7 @@ pub struct GuiConfig {
 
 impl Default for GuiConfig {
     fn default() -> Self {
-        GuiConfig {
+        Self {
             preferred_format: None,
             samples: SampleCount::Sample1,
         }
@@ -73,12 +75,14 @@ pub struct Gui {
 }
 
 impl Gui {
+    /// # Errors
+    /// May return `RhError`
     pub fn new<T>(
         event_loop: &EventLoopWindowTarget<T>,
         surface: Arc<Surface>,
         gfx_queue: Arc<Queue>,
         config: GuiConfig,
-    ) -> Result<Gui, RhError> {
+    ) -> Result<Self, RhError> {
         // Pick preferred format if provided, otherwise use the default one
         let format = get_surface_image_format(
             &surface,
@@ -93,16 +97,17 @@ impl Gui {
         let renderer = Renderer::new(gfx_queue, format)?;
         let mut egui_winit = egui_winit::State::new(event_loop);
         egui_winit.set_max_texture_side(max_texture_side);
+        #[allow(clippy::cast_possible_truncation)]
         egui_winit.set_pixels_per_point(
             surface_window(&surface)?.scale_factor() as f32,
         );
-        Ok(Gui {
-            egui_ctx: Default::default(),
+        Ok(Self {
+            egui_ctx: Context::default(),
             egui_winit,
             renderer,
             surface,
             shapes: vec![],
-            textures_delta: Default::default(),
+            textures_delta: TexturesDelta::default(),
         })
     }
 
@@ -138,7 +143,11 @@ impl Gui {
         }
     }
 
-    /// Begins Egui frame & determines what will be drawn later. This must be called before draw, and after `update` (winit event).
+    /// Begins Egui frame & determines what will be drawn later. This must be
+    /// called before draw, and after `update` (winit event).
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn immediate_ui(
         &mut self,
         layout_function: impl FnOnce(&mut Self),
@@ -152,8 +161,11 @@ impl Gui {
         Ok(())
     }
 
-    /// If you wish to better control when to begin frame, do so by calling this function
-    /// (Finish by drawing)
+    /// If you wish to better control when to begin frame, do so by calling
+    /// this function (Finish by drawing)
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn begin_frame(&mut self) -> Result<(), RhError> {
         let raw_input = self
             .egui_winit
@@ -162,6 +174,8 @@ impl Gui {
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn draw<T>(
         &mut self,
         dimensions: [u32; 2],
@@ -208,6 +222,9 @@ impl Gui {
     }
 
     /// Registers a user image from Vulkano image view to be used by egui
+    ///
+    /// # Errors
+    /// May return `RhError`
     pub fn register_user_image_view(
         &mut self,
         image: Arc<dyn ImageViewAbstract + Send + Sync>,
@@ -216,8 +233,14 @@ impl Gui {
     }
 
     /// Registers a user image to be used by egui
-    /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
-    /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
+    /// - `image_file_bytes`: e.g. `include_bytes!("./assets/tree.png")`
+    /// - `format`: e.g. `vulkano::format::Format::R8G8B8A8Unorm`
+    ///
+    /// # Errors
+    /// May return `RhError`
+    ///
+    /// # Panics
+    /// Panics if the image can not be created
     pub fn register_user_image(
         &mut self,
         image_file_bytes: &[u8],
@@ -233,6 +256,11 @@ impl Gui {
         self.renderer.register_image(image)
     }
 
+    /// # Errors
+    /// May return `RhError`
+    ///
+    /// # Panics
+    /// Panics if the image can not be created
     pub fn register_user_image_from_bytes(
         &mut self,
         image_byte_data: &[u8],

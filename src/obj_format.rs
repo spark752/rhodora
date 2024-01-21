@@ -1,5 +1,9 @@
-use crate::rh_error::*;
-use crate::types::{vertex::*, *};
+use crate::gltf_format;
+use crate::rh_error::RhError;
+use crate::types::{
+    vertex::{Interleaved, Position, VertexBuffers},
+    Submesh,
+};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +25,7 @@ pub struct ObjToLoad {
 impl Default for ObjToLoad {
     fn default() -> Self {
         Self {
-            filename: "".to_string(),
+            filename: String::new(),
             scale: 1.0f32,
             swizzle: true,
             order_option: None,
@@ -37,6 +41,9 @@ pub struct ObjLoaded {
 }
 
 /// Load a Wavefront OBJ file
+///
+/// # Errors
+/// May return `RhError`
 pub fn load_obj(
     obj_to_load: &ObjToLoad,
     vb: &mut VertexBuffers,
@@ -46,8 +53,11 @@ pub fn load_obj(
     process_obj(obj_to_load, load_result, vb)
 }
 
-/// Process a loaded Wavefront OBJ file. Called by load_obj or can be used
+/// Process a loaded Wavefront OBJ file. Called by `load_obj` or can be used
 /// with files loaded some other way.
+///
+/// # Errors
+/// May return `RhError`
 pub fn process_obj(
     obj_to_load: &ObjToLoad,
     load_result: tobj::LoadResult,
@@ -65,7 +75,7 @@ pub fn process_obj(
 
     // Models aka submeshes
     // Load each mesh sequentially into the vertex buffer
-    for m in tobj_models.iter() {
+    for m in &tobj_models {
         let mesh = &m.mesh;
         let pos_count = mesh.positions.len() / 3;
         let idx_count = mesh.indices.len();
@@ -145,19 +155,19 @@ pub fn process_obj(
     // MTL predates PBR but a proposed extension uses "Pr" for roughness and
     // "Pm" for metalness so that is implemented here.
     let mut materials = Vec::new();
-    for m in tobj_materials.unwrap_or_default().iter() {
+    for m in &tobj_materials.unwrap_or_default() {
         info!("Processing {:?}", m.name);
         let material = ObjMaterial {
             colour_filename: m.diffuse_texture.clone(),
             diffuse: m.diffuse,
-            roughness: match m.unknown_param.get("Pr") {
-                Some(x) => x.parse::<f32>().unwrap_or(0.5),
-                None => 0.5,
-            },
-            metalness: match m.unknown_param.get("Pm") {
-                Some(x) => x.parse::<f32>().unwrap_or(0.0),
-                None => 0.0,
-            },
+            roughness: m
+                .unknown_param
+                .get("Pr")
+                .map_or(0.5, |x| x.parse::<f32>().unwrap_or(0.5)),
+            metalness: m
+                .unknown_param
+                .get("Pm")
+                .map_or(0.0, |x| x.parse::<f32>().unwrap_or(0.0)),
         };
         materials.push(material);
     }
@@ -184,22 +194,38 @@ impl Default for ObjBatch {
 }
 
 impl ObjBatch {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn load(&mut self, obj_to_load: &ObjToLoad) -> Result<(), RhError> {
         let obj_loaded = load_obj(obj_to_load, &mut self.vb)?;
         self.obj.push(obj_loaded);
         Ok(())
     }
 
+    /// # Errors
+    /// May return `RhError`
     pub fn process(
         &mut self,
         obj_to_load: &ObjToLoad,
         load_result: tobj::LoadResult,
     ) -> Result<(), RhError> {
         let obj_loaded = process_obj(obj_to_load, load_result, &mut self.vb)?;
+        self.obj.push(obj_loaded);
+        Ok(())
+    }
+
+    /// # Errors
+    /// May return `RhError`
+    pub fn load_gltf(
+        &mut self,
+        obj_to_load: &ObjToLoad,
+    ) -> Result<(), RhError> {
+        let obj_loaded = gltf_format::load_gltf(obj_to_load, &mut self.vb)?;
         self.obj.push(obj_loaded);
         Ok(())
     }

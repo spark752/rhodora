@@ -73,11 +73,13 @@ pub enum RhError {
     VkRenderPassError(Box<RenderPassError>),
     VkCopyError(Box<CopyError>),
     VkBufferError(Box<BufferError>),
+    GltfError(Box<gltf::Error>),
 }
 
 impl error::Error for RhError {}
 
 impl fmt::Display for RhError {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::WindowNotFound => write!(f, "winit window not found"),
@@ -185,168 +187,171 @@ impl fmt::Display for RhError {
             Self::VkBufferError(e) => {
                 write!(f, "vulkano BufferError: {e}")
             }
+            Self::GltfError(e) => {
+                write!(f, "gltf Error: {e}")
+            }
         }
     }
 }
 
 impl From<serde_yaml::Error> for RhError {
     fn from(e: serde_yaml::Error) -> Self {
-        RhError::SerdeYamlError(Box::new(e))
+        Self::SerdeYamlError(Box::new(e))
     }
 }
 
 impl From<std::io::Error> for RhError {
     fn from(e: std::io::Error) -> Self {
-        RhError::StdIoError(e)
+        Self::StdIoError(e)
     }
 }
 
 impl From<tobj::LoadError> for RhError {
     fn from(e: tobj::LoadError) -> Self {
-        RhError::TObjLoadError(e)
+        Self::TObjLoadError(e)
     }
 }
 
 impl From<image::error::ImageError> for RhError {
     fn from(e: image::error::ImageError) -> Self {
-        RhError::ImageImageError(Box::new(e))
+        Self::ImageImageError(Box::new(e))
     }
 }
 
 impl From<LoadingError> for RhError {
     fn from(e: LoadingError) -> Self {
-        RhError::VkLoadingError(Box::new(e))
+        Self::VkLoadingError(Box::new(e))
     }
 }
 
 impl From<InstanceCreationError> for RhError {
     fn from(e: InstanceCreationError) -> Self {
-        RhError::VkInstanceCreationError(Box::new(e))
+        Self::VkInstanceCreationError(Box::new(e))
     }
 }
 
 impl From<DeviceCreationError> for RhError {
     fn from(e: DeviceCreationError) -> Self {
-        RhError::VkDeviceCreationError(Box::new(e))
+        Self::VkDeviceCreationError(Box::new(e))
     }
 }
 
 impl From<ImageError> for RhError {
     fn from(e: ImageError) -> Self {
-        RhError::VkImageError(Box::new(e))
+        Self::VkImageError(Box::new(e))
     }
 }
 
 impl From<vulkano_win::CreationError> for RhError {
     fn from(e: vulkano_win::CreationError) -> Self {
-        RhError::VkWinCreationError(Box::new(e))
+        Self::VkWinCreationError(Box::new(e))
     }
 }
 
 impl From<ImageViewCreationError> for RhError {
     fn from(e: ImageViewCreationError) -> Self {
-        RhError::VkImageViewCreationError(Box::new(e))
+        Self::VkImageViewCreationError(Box::new(e))
     }
 }
 
 impl From<VulkanError> for RhError {
     fn from(e: VulkanError) -> Self {
-        RhError::VkVulkanError(e)
+        Self::VkVulkanError(e)
     }
 }
 
 impl From<ImmutableImageCreationError> for RhError {
     fn from(e: ImmutableImageCreationError) -> Self {
-        RhError::VkImmutableImageCreationError(Box::new(e))
+        Self::VkImmutableImageCreationError(Box::new(e))
     }
 }
 
 impl From<DescriptorSetCreationError> for RhError {
     fn from(e: DescriptorSetCreationError) -> Self {
-        RhError::VkDescriptorSetCreationError(Box::new(e))
+        Self::VkDescriptorSetCreationError(Box::new(e))
     }
 }
 
 impl From<FlushError> for RhError {
     fn from(e: FlushError) -> Self {
-        RhError::VkFlushError(Box::new(e))
+        Self::VkFlushError(Box::new(e))
     }
 }
 
 impl From<BuildError> for RhError {
     fn from(e: BuildError) -> Self {
-        RhError::VkBuildError(e)
+        Self::VkBuildError(e)
     }
 }
 
 impl From<CommandBufferExecError> for RhError {
     fn from(e: CommandBufferExecError) -> Self {
-        RhError::VkCommandBufferExecError(Box::new(e))
+        Self::VkCommandBufferExecError(Box::new(e))
     }
 }
 
 impl From<AllocationCreationError> for RhError {
     fn from(e: AllocationCreationError) -> Self {
-        RhError::VkAllocationCreationError(Box::new(e))
+        Self::VkAllocationCreationError(Box::new(e))
     }
 }
 
 impl From<PhysicalDeviceError> for RhError {
     fn from(e: PhysicalDeviceError) -> Self {
-        RhError::VkPhysicalDeviceError(Box::new(e))
+        Self::VkPhysicalDeviceError(Box::new(e))
     }
 }
 
 impl From<SwapchainCreationError> for RhError {
     fn from(e: SwapchainCreationError) -> Self {
-        RhError::VkSwapchainCreationError(Box::new(e))
+        Self::VkSwapchainCreationError(Box::new(e))
     }
 }
 
 impl From<CommandBufferBeginError> for RhError {
     fn from(e: CommandBufferBeginError) -> Self {
-        RhError::VkCommandBufferBeginError(Box::new(e))
+        Self::VkCommandBufferBeginError(Box::new(e))
     }
 }
 
 impl From<ShaderCreationError> for RhError {
     fn from(e: ShaderCreationError) -> Self {
-        RhError::VkShaderCreationError(Box::new(e))
+        Self::VkShaderCreationError(Box::new(e))
     }
 }
 
 impl From<GraphicsPipelineCreationError> for RhError {
     fn from(e: GraphicsPipelineCreationError) -> Self {
-        RhError::VkGraphicsPipelineCreationError(Box::new(e))
+        Self::VkGraphicsPipelineCreationError(Box::new(e))
     }
 }
 
 impl From<SamplerCreationError> for RhError {
     fn from(e: SamplerCreationError) -> Self {
-        RhError::VkSamplerCreationError(Box::new(e))
+        Self::VkSamplerCreationError(Box::new(e))
     }
 }
 
 impl From<PipelineExecutionError> for RhError {
     fn from(e: PipelineExecutionError) -> Self {
-        RhError::VkPipelineExecutionError(Box::new(e))
+        Self::VkPipelineExecutionError(Box::new(e))
     }
 }
 
 impl From<RenderPassError> for RhError {
     fn from(e: RenderPassError) -> Self {
-        RhError::VkRenderPassError(Box::new(e))
+        Self::VkRenderPassError(Box::new(e))
     }
 }
 
 impl From<CopyError> for RhError {
     fn from(e: CopyError) -> Self {
-        RhError::VkCopyError(Box::new(e))
+        Self::VkCopyError(Box::new(e))
     }
 }
 
 impl From<BufferError> for RhError {
     fn from(e: BufferError) -> Self {
-        RhError::VkBufferError(Box::new(e))
+        Self::VkBufferError(Box::new(e))
     }
 }

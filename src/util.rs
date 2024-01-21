@@ -1,6 +1,9 @@
-// Try out a module of utility functions?
-use crate::vk_window::*;
-use crate::{rh_error::*, types::*};
+/// A module of utility functions
+use crate::vk_window::VkWindow;
+use crate::{
+    rh_error::RhError,
+    types::{AttachmentView, TransferFuture},
+};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
@@ -27,11 +30,14 @@ use vulkano::{
     },
     render_pass::{LoadOp, StoreOp},
     swapchain::{
-        ColorSpace, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+        ColorSpace, PresentMode, Surface, SurfaceInfo, Swapchain,
+        SwapchainCreateInfo,
     },
     sync::GpuFuture,
 };
 
+/// # Errors
+/// May return `RhError`
 pub fn get_layout(
     pipeline: &Arc<GraphicsPipeline>,
     set_number: usize,
@@ -68,6 +74,8 @@ pub fn alpha_blend_enable() -> ColorBlendState {
     }
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn create_target(
     allocator: &(impl MemoryAllocator + ?Sized),
     dimensions: [u32; 2],
@@ -83,6 +91,8 @@ pub fn create_target(
     )?)?)
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn create_depth(
     allocator: &(impl MemoryAllocator + ?Sized),
     dimensions: [u32; 2],
@@ -101,6 +111,8 @@ pub fn create_depth(
     )?)
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn create_msaa(
     allocator: &(impl MemoryAllocator + ?Sized),
     dimensions: [u32; 2],
@@ -120,6 +132,9 @@ pub fn create_msaa(
 
 /// Select first supported format for depth attachment from an array of
 /// candidates
+///
+/// # Errors
+/// May return `RhError`
 pub fn find_depth_format(
     physical: &PhysicalDevice,
     candidates: &[Format],
@@ -138,6 +153,9 @@ pub fn find_depth_format(
 
 /// Select first supported format for colour attachment and sampling from
 /// an array of candidates
+///
+/// # Errors
+/// May return `RhError`
 pub fn find_colour_format(
     physical: &PhysicalDevice,
     candidates: &[Format],
@@ -157,6 +175,9 @@ pub fn find_colour_format(
 
 /// Select first supported format for swapchain use (compatible with the
 /// surface) from an array of candidates
+///
+/// # Errors
+/// May return `RhError`
 pub fn find_swapchain_format(
     physical: &PhysicalDevice,
     surface: &Surface,
@@ -164,7 +185,7 @@ pub fn find_swapchain_format(
 ) -> Result<Format, RhError> {
     for candidate in candidates {
         let search = physical
-            .surface_formats(surface, Default::default())?
+            .surface_formats(surface, SurfaceInfo::default())?
             .into_iter()
             .find(|&f| f.0 == *candidate && f.1 == ColorSpace::SrgbNonLinear);
         if let Some(f) = search {
@@ -174,6 +195,8 @@ pub fn find_swapchain_format(
     Err(RhError::UnsupportedSwapchainFormat)
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn create_primary_cbb(
     cmd_allocator: &StandardCommandBufferAllocator,
     queue: &Queue,
@@ -188,38 +211,38 @@ pub fn create_primary_cbb(
     )
 }
 
+#[must_use]
 pub fn choose_present_mode(window: &VkWindow, vsync: bool) -> PresentMode {
     let mode_result = window.physical().surface_present_modes(window.surface());
-    match mode_result {
-        Ok(mut modes) => {
-            if vsync {
-                // Might have to search through the list twice which
-                // doesn't work well with iterators and find, but it is
-                // a short list so can be collected into a vector.
-                /*let mv: Vec<PresentMode> = modes.collect();
-                for m in mv.iter() {
-                    if *m == PresentMode::Mailbox {
-                        return *m;
-                    }
+    mode_result.map_or(PresentMode::Fifo, |mut modes| {
+        if vsync {
+            // Might have to search through the list twice which
+            // doesn't work well with iterators and find, but it is
+            // a short list so can be collected into a vector.
+            /*let mv: Vec<PresentMode> = modes.collect();
+            for m in mv.iter() {
+                if *m == PresentMode::Mailbox {
+                    return *m;
                 }
-                for m in mv.iter() {
-                    if *m == PresentMode::FifoRelaxed {
-                        return *m;
-                    }
-                }*/
-                PresentMode::Fifo
-            } else {
-                // Immediate mode is the only vsync off mode. It is likely
-                // supported but Vulkan doesn't require it.
-                modes
-                    .find(|&m| m == PresentMode::Immediate)
-                    .unwrap_or(PresentMode::Fifo)
             }
+            for m in mv.iter() {
+                if *m == PresentMode::FifoRelaxed {
+                    return *m;
+                }
+            }*/
+            PresentMode::Fifo
+        } else {
+            // Immediate mode is the only vsync off mode. It is likely
+            // supported but Vulkan doesn't require it.
+            modes
+                .find(|&m| m == PresentMode::Immediate)
+                .unwrap_or(PresentMode::Fifo)
         }
-        Err(_) => PresentMode::Fifo,
-    }
+    })
 }
 
+/// # Errors
+/// May return `RhError`
 pub fn create_swapchain(
     window: &VkWindow,
     format: Format,
@@ -244,6 +267,7 @@ pub fn create_swapchain(
     Ok((swapchain, images))
 }
 
+#[must_use]
 pub fn attachment_info(
     background: &[f32; 4],
     target_image_view: AttachmentView,
@@ -255,9 +279,9 @@ pub fn attachment_info(
             load_op: LoadOp::Clear,
             store_op: StoreOp::DontCare,
             clear_value,
-            resolve_info: Some(RenderingAttachmentResolveInfo {
-                ..RenderingAttachmentResolveInfo::image_view(target_image_view)
-            }),
+            resolve_info: Some(RenderingAttachmentResolveInfo::image_view(
+                target_image_view,
+            )),
             ..RenderingAttachmentInfo::image_view(msaa_image_view)
         }
     } else {
@@ -271,6 +295,7 @@ pub fn attachment_info(
 }
 
 /// Convert a focal length in mm (for a 35mm sensor) to a field of view
+#[must_use]
 pub fn focal_length_to_fovy(focal_length: f32) -> f32 {
     let f = focal_length.max(1.0f32);
     (12.0f32 / f).atan() * 2.0f32
@@ -278,6 +303,9 @@ pub fn focal_length_to_fovy(focal_length: f32) -> f32 {
 
 /// Start a transfer to the GPU by building and executing a command buffer
 /// and returning a future to wait on
+///
+/// # Errors
+/// May return `RhError`
 pub fn start_transfer(
     cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     queue: Arc<Queue>,
@@ -285,14 +313,16 @@ pub fn start_transfer(
     Ok(cbb.build()?.execute(queue)?.then_signal_fence_and_flush()?)
 }
 
-/// Transform a 3D position using a 4x4 matrix and return as a Vec3
+/// Transform a 3D position using a 4x4 matrix and return as a `glm::Vec3`
+#[must_use]
 pub fn transform(position: &glm::Vec3, matrix: &glm::Mat4) -> glm::Vec3 {
     let ws = glm::vec4(position.x, position.y, position.z, 1.0f32);
     let vs = matrix * ws;
     glm::vec3(vs.x, vs.y, vs.z)
 }
 
-/// Transform a 3D vector using a 4x4 matrix and return as a Vec4
+/// Transform a 3D vector using a 4x4 matrix and return as a `glm::Vec4`
+#[must_use]
 pub fn transform4(vector: &glm::Vec4, matrix: &glm::Mat4) -> glm::Vec4 {
     matrix * vector
 }
