@@ -23,53 +23,6 @@ pub struct Submesh {
     pub material_id: Option<usize>,
 }
 
-pub mod vertex {
-    // Standard vertex format is to have two streams:
-    // Position = positions only
-    // Interleaved = all other data, interleaved
-    use bytemuck::{Pod, Zeroable};
-    use vulkano::pipeline::graphics::vertex_input::Vertex;
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
-    pub struct Interleaved {
-        #[format(R32G32B32_SFLOAT)]
-        pub normal: [f32; 3],
-        #[format(R32G32_SFLOAT)]
-        pub tex_coord: [f32; 2],
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
-    pub struct Position {
-        #[format(R32G32B32_SFLOAT)]
-        pub position: [f32; 3],
-    }
-
-    pub struct VertexBuffers {
-        pub positions: Vec<Position>,
-        pub interleaved: Vec<Interleaved>,
-        pub indices: Vec<u16>,
-    }
-
-    impl VertexBuffers {
-        #[must_use]
-        pub fn new() -> Self {
-            Self {
-                positions: Vec::new(),
-                interleaved: Vec::new(),
-                indices: Vec::new(),
-            }
-        }
-    }
-
-    impl Default for VertexBuffers {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-}
-
 pub struct RenderFormat {
     pub colour_format: vulkano::format::Format,
     pub depth_format: vulkano::format::Format,

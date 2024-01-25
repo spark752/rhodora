@@ -5,14 +5,14 @@ const NEAR_CLIP_METERS: f32 = 0.1;
 const FAR_CLIP_METERS: f32 = 100.0;
 
 #[derive(Debug, Copy, Clone)]
-pub struct CameraProperties {
+pub struct Properties {
     pub aspect_ratio: f32,
     pub fovy: f32,
     pub position: glm::Vec3,
     pub target: glm::Vec3,
 }
 
-impl Default for CameraProperties {
+impl Default for Properties {
     fn default() -> Self {
         Self {
             aspect_ratio: 16.0f32 / 9.0f32,
@@ -39,7 +39,7 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self::new(CameraProperties::default())
+        Self::new(Properties::default())
     }
 }
 
@@ -57,7 +57,7 @@ impl CameraTrait for Camera {
 
 impl Camera {
     #[must_use]
-    pub fn new(properties: CameraProperties) -> Self {
+    pub fn new(properties: Properties) -> Self {
         Self {
             aspect_ratio: properties.aspect_ratio,
             fovy: properties.fovy,

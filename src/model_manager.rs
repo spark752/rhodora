@@ -1,13 +1,12 @@
 use crate::{
+    dualquat::DualQuat,
     obj_format::{ObjBatch, ObjLoaded, ObjMaterial, ObjToLoad},
     pbr_pipeline::{PbrPipeline, PushConstantData, UniformM},
     rh_error::RhError,
-    texture::TextureManager,
-    types::{
-        vertex::{Interleaved, Position, VertexBuffers},
-        DeviceAccess, Submesh, TextureView,
-    },
+    texture::Manager as TextureManager,
+    types::{CameraTrait, DeviceAccess, Submesh, TextureView},
     util,
+    vertex::{Buffers as VertexBuffers, Interleaved, Position},
 };
 use log::info;
 use nalgebra_glm as glm;
@@ -57,6 +56,7 @@ pub struct DeviceVertexBuffers {
 impl DeviceVertexBuffers {
     /// # Errors
     /// May return `RhError`
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new<T>(
         _cbb: &mut AutoCommandBufferBuilder<T>,
         mem_allocator: Arc<StandardMemoryAllocator>, // Not a reference
@@ -114,15 +114,63 @@ pub struct Mesh {
     order: Vec<usize>,
 }
 
+// FIXME: You can't actually change this without also changing the value
+// passed to the shader macro
+const MAX_JOINTS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct JointTransforms([DualQuat; MAX_JOINTS]);
+
+impl Default for JointTransforms {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| DualQuat::default()))
+        /*  FIXME Test by stretching some joints
+        Self(std::array::from_fn(|i| {
+            if i == 18 {
+                // Head
+                DualQuat {
+                    real: glm::quat(0.0, 0.0, 0.0, 1.0),
+                    dual: glm::quat(0.0, 0.0, 0.06, 0.0),
+                }
+            } else if i == 23 {
+                // Right thumb
+                DualQuat {
+                    real: glm::quat(0.0, 0.0, 0.0, 1.0),
+                    dual: glm::quat(0.0, -0.05, -0.05, 0.0),
+                }
+            } else {
+                DualQuat::default()
+            }
+        })) */
+    }
+}
+
+impl From<JointTransforms> for [[[f32; 4]; 2]; MAX_JOINTS] {
+    fn from(jt: JointTransforms) -> [[[f32; 4]; 2]; MAX_JOINTS] {
+        std::array::from_fn(|i| jt.0[i].into())
+    }
+}
+
+/*
+fn from_mat3(m: &glm::Mat3) -> [[f32; 4]; 3] {
+    [
+        [m.m11, m.m21, m.m31, 0.0],
+        [m.m21, m.m22, m.m32, 0.0],
+        [m.m31, m.m32, m.m33, 0.0],
+    ]
+}
+*/
+
 struct Model {
     mesh: Mesh,
     dvb_index: usize,
     material_offset: usize,
-    matrix: glm::Mat4,
     visible: bool,
+    matrix: glm::Mat4,
+    joints: JointTransforms,
 }
 
-pub struct ObjManager {
+pub struct ModelManager {
     models: Vec<Model>,
     dvbs: Vec<DeviceVertexBuffers>,
     materials: Vec<PbrMaterial>,
@@ -130,7 +178,7 @@ pub struct ObjManager {
     mem_allocator: Arc<StandardMemoryAllocator>,
 }
 
-impl ObjManager {
+impl ModelManager {
     /// # Errors
     /// May return `RhError`
     pub fn new(
@@ -166,9 +214,10 @@ impl ObjManager {
 
     /// # Errors
     /// May return `RhError`
+    #[allow(clippy::needless_pass_by_value)]
     pub fn load_batch_option<T>(
         &mut self,
-        device_access: DeviceAccess<T>,
+        device_access: DeviceAccess<T>, // Not a reference
         pbr_pipeline: &PbrPipeline,
         batch: ObjBatch,                      // Not a reference
         tex_option: Option<Vec<TexMaterial>>, // Not a reference
@@ -194,8 +243,9 @@ impl ObjManager {
                 mesh,
                 dvb_index,
                 material_offset,
-                matrix: glm::Mat4::identity(),
                 visible: false, // To prevent object from popping up at origin
+                matrix: glm::Mat4::identity(),
+                joints: JointTransforms::default(),
             });
         }
 
@@ -324,9 +374,16 @@ impl ObjManager {
         cbb: &mut AutoCommandBufferBuilder<T>,
         descriptor_set_allocator: &StandardDescriptorSetAllocator,
         pbr_pipeline: &PbrPipeline,
+        camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
         for index in 0..self.models.len() {
-            self.draw(index, cbb, descriptor_set_allocator, pbr_pipeline)?;
+            self.draw(
+                index,
+                cbb,
+                descriptor_set_allocator,
+                pbr_pipeline,
+                camera,
+            )?;
         }
         Ok(())
     }
@@ -339,6 +396,7 @@ impl ObjManager {
         cbb: &mut AutoCommandBufferBuilder<T>,
         descriptor_set_allocator: &StandardDescriptorSetAllocator,
         pbr_pipeline: &PbrPipeline,
+        camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
         if !self.models[index].visible {
             return Ok(());
@@ -348,8 +406,19 @@ impl ObjManager {
         // since this will change for each model and updating a descriptor set
         // unbinds all of those with higher numbers
         let m_buffer = {
+            // `model_view` is for converting positions to view space.
+            // `norm_view` is for converting normals to view space. It could
+            // be a `glm::Mat3` but std140 pads these and there is no compatible
+            // `into()` method so a `glm::Mat4` is currently used insted. This
+            // should be calculated from the transpose of the inverse of
+            // `model_view` but unless there is non-uniform scaling this should
+            // work. Of course this means there is no reason to actually send
+            // it separately, so I guess FIXME.
+            let mv = camera.view_matrix() * self.models[index].matrix;
             let data = UniformM {
-                model: self.models[index].matrix.into(),
+                model_view: mv.into(),
+                norm_view: mv.into(),
+                joints: self.models[index].joints.into(),
             };
             let buffer = pbr_pipeline.m_pool.allocate_sized()?;
             *buffer.write()? = data;

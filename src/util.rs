@@ -49,6 +49,7 @@ pub fn get_layout(
         .ok_or(RhError::PipelineError)
 }
 
+#[must_use]
 pub fn alpha_blend_enable() -> ColorBlendState {
     ColorBlendState {
         // VkPipelineColorBlendAttachmentState

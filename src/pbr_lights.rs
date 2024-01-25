@@ -17,7 +17,9 @@ impl Default for PbrLights {
         Self {
             ambient: 0.1f32,
 
-            // Lights are in VIEW space with intensity in last element
+            // Lights are in VIEW space with intensity in last element.
+            // Note that Vulkan view space has z = 0 at the near plane so these
+            // defaults give a light above the camera at the near plane.
             array: [
                 [0.0f32, -5.0f32, 0.0f32, 150.0f32],
                 [0.0f32, 0.0f32, 0.0f32, 0.0f32],

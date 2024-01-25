@@ -4,6 +4,7 @@
 // Based in part on learnopengl.com and on "Moving Frostbite to Physically
 // Based Rendering" by Legarde and de Rousiers, SIGGRAPH 2014
 
+// Inputs from vertex shaders
 layout(location = 0) in vec3 f_normal;
 layout(location = 1) in vec3 f_position;
 layout(location = 2) in vec2 f_tex_coord;
@@ -11,22 +12,19 @@ layout(location = 2) in vec2 f_tex_coord;
 // Matrices are used by vertex shader but are part of the same uniform buffer.
 // The lights array currently contains point lights with each position in view
 // space in the xyz elements and its intensity in the w element.
-layout(set = 0, binding = 0) uniform VPL {
-    mat4 view;
-    mat4 proj;
-    vec4 ambient;
-    vec4 lights[4];
-} vpl;
+#include "vpl.glsl"
 
+// Texture for albedo
 layout(set = 2, binding = 0) uniform sampler2D tex;
 
-// Material parameters
+// Material parameters as push constants
 layout(push_constant) uniform PushConstantData {
     vec4 diffuse; // Multiplied by diffuse texture contents (alpha not used)
     float roughness;
     float metalness;
 } material;
 
+// Output
 layout(location = 0) out vec4 frag;
 
 const float PI = 3.1415926535897932;

@@ -26,7 +26,7 @@ use winit::{
     event_loop::EventLoop,
 };
 
-pub struct VkWindowProperties {
+pub struct Properties {
     pub dimensions: [u32; 2],
     pub title: String,
 }
@@ -49,12 +49,12 @@ impl VkWindow {
     /// not expected to happen.
     #[allow(clippy::too_many_lines)]
     pub fn new(
-        properties: Option<VkWindowProperties>,
+        properties: Option<Properties>,
         event_loop: &EventLoop<()>,
         debug_layers: bool,
     ) -> Result<Self, RhError> {
         let properties = properties.map_or_else(
-            || VkWindowProperties {
+            || Properties {
                 dimensions: [640, 480],
                 title: "Rhodora".to_string(),
             },

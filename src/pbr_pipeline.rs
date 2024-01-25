@@ -1,12 +1,10 @@
-use crate::pbr_lights::PbrLightTrait;
-use crate::rh_error::RhError;
-use crate::types::{
+use crate::{
+    pbr_lights::PbrLightTrait,
+    rh_error::RhError,
+    types::{CameraTrait, RenderFormat},
+    util,
     vertex::{Interleaved, Position},
-    CameraTrait, RenderFormat,
 };
-use crate::util;
-#[allow(unused_imports)]
-use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
     buffer::{
@@ -58,7 +56,7 @@ impl PbrPipeline {
     pub fn new(
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
-        render_format: RenderFormat,
+        render_format: &RenderFormat,
     ) -> Result<Self, RhError> {
         let vert_shader = vs::load(device.clone())?;
         let frag_shader = fs::load(device.clone())?;
@@ -150,7 +148,6 @@ impl PbrPipeline {
         // Lights are also here as an experiment.
         let vpl_buffer = {
             let data = UniformVPL {
-                view: camera.view_matrix().into(),
                 proj: camera.proj_matrix().into(),
                 ambient: lights.ambient_array(),
                 lights: lights.light_array(&camera.view_matrix()),
@@ -176,10 +173,12 @@ impl PbrPipeline {
 }
 
 // Shaders
+// FIXME: It would be nice if we could build MAX_JOINTS from a const
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "shaders/pbr.vert",
+        define: [("MAX_JOINTS", "32")]
     }
 }
 

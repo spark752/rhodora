@@ -1,9 +1,7 @@
 use crate::obj_format::{ObjLoaded, ObjMaterial, ObjToLoad};
 use crate::rh_error::RhError;
-use crate::types::{
-    vertex::{Interleaved, Position, VertexBuffers},
-    Submesh,
-};
+use crate::types::Submesh;
+use crate::vertex::{Buffers as VertexBuffers, Interleaved, Position};
 use gltf::mesh::util::{
     ReadIndices, ReadJoints, ReadNormals, ReadPositions, ReadTexCoords,
     ReadWeights,
@@ -12,8 +10,27 @@ use gltf::{
     accessor::Dimensions, buffer, image::Source, mesh::Mode, Document, Gltf,
     Semantic,
 };
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use std::{fs, io, path::Path};
+
+struct PackedJoints {
+    ids: u32,
+    weights: [f32; 4],
+}
+
+impl PackedJoints {
+    /// Packs joint data for a vertex into the vertex format. Takes ownership
+    /// of arguments.
+    const fn new(id_array: [u8; 4], weights: [f32; 4]) -> Self {
+        Self {
+            ids: ((id_array[0] as u32) << 24)
+                + ((id_array[1] as u32) << 16)
+                + ((id_array[2] as u32) << 8)
+                + (id_array[3] as u32),
+            weights,
+        }
+    }
+}
 
 fn load_impl<P>(path: P) -> Result<(Document, Vec<buffer::Data>), RhError>
 where
@@ -40,7 +57,8 @@ where
 ///
 /// # Errors
 /// May return `RhError`
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_lines)]
 pub fn load_gltf(
     obj_to_load: &ObjToLoad,
     vb: &mut VertexBuffers,
@@ -65,6 +83,7 @@ pub fn load_gltf(
     // Can contain multiple meshes which can contain multiple primitives. Each
     // primitive is treated as a submesh to match the .obj format support.
     for m in document.meshes() {
+        info!("Mesh={}, Name={:?}", m.index(), m.name());
         for p in m.primitives() {
             // Mesh must be made of indexed triangles
             if p.mode() != Mode::Triangles {
@@ -126,6 +145,7 @@ pub fn load_gltf(
                         }
                     }
                     ReadIndices::U32(it) => {
+                        info!("Trying to convert 32 bit indices to 16 bit");
                         for i in it {
                             vb.indices.push(
                                 u16::try_from(i)
@@ -135,6 +155,7 @@ pub fn load_gltf(
                     }
                 }
             } else {
+                warn!("Missing mesh indices");
                 return Err(RhError::UnsupportedFormat);
             };
             debug!("vb.indices.len() now = {}", vb.indices.len());
@@ -154,58 +175,100 @@ pub fn load_gltf(
                         }
                     }
                     ReadPositions::Sparse(_) => {
+                        warn!("Unsupported sparse format");
                         return Err(RhError::UnsupportedFormat);
                     }
                 }
             } else {
+                warn!("Missing mesh positions");
                 return Err(RhError::UnsupportedFormat);
             }
             debug!("vb.positions.len() now = {}", vb.positions.len());
 
             // Read the texture coordinates if they exist and store them in a
             // temporary buffer so that they can be interleaved with normals
-            let mut uv_temp = Vec::new();
+            let mut uv = Vec::new();
             if let Some(uv_data) = reader.read_tex_coords(0) {
-                match uv_data {
-                    ReadTexCoords::F32(it) => {
-                        for i in it {
-                            uv_temp.push(i);
+                if let ReadTexCoords::F32(it) = uv_data {
+                    for i in it {
+                        uv.push(i);
+                    }
+                } else {
+                    // Could support these if we come up with a test case
+                    warn!("Unsupported UV format");
+                    return Err(RhError::UnsupportedFormat);
+                }
+            }
+
+            // Read the joints if they exist and store them in a temporary
+            // buffer so they can be interleaved with normals
+            let mut packed_joints = Vec::new();
+            if let Some(d) = reader.read_joints(0) {
+                match d {
+                    ReadJoints::U8(jit) => {
+                        if let Some(d) = reader.read_weights(0) {
+                            if let ReadWeights::F32(wit) = d {
+                                for (id_array, weights) in jit.zip(wit) {
+                                    trace!(
+                                        "Joint ids={:?} weights={:?}",
+                                        id_array,
+                                        weights
+                                    );
+                                    packed_joints.push(PackedJoints::new(
+                                        id_array, weights,
+                                    ));
+                                }
+                            } else {
+                                // We could try to support these in the
+                                // future if we come up with a test case
+                                warn!("Unsupported weight format");
+                                return Err(RhError::UnsupportedFormat);
+                            }
+                        } else {
+                            warn!("Missing joint weights");
+                            return Err(RhError::UnsupportedFormat);
                         }
                     }
-                    _ => {
+                    ReadJoints::U16(_) => {
+                        // We could try to support these in the future
+                        // if we come up with a test case
+                        warn!("Unsupported joint format");
                         return Err(RhError::UnsupportedFormat);
-                    } /* Could probably support these but may have to normalize
-                      ReadTexCoords::U16(it) => {
-                          for i in it {
-                              uv_temp.push([i[0] as f32, i[1] as f32]);
-                          }
-                      }
-                      ReadTexCoords::U8(it) => {
-                          for i in it {
-                              uv_temp.push([i[0] as f32, i[1] as f32]);
-                          }
-                      }
-                      */
+                    }
                 }
             }
 
             // Read the normals, convert to Z axis up if needed, and store along
-            // with texture coordinates in an interleaved buffer
+            // with texture coordinates etc. in an interleaved buffer
             if let Some(norm_data) = reader.read_normals() {
                 match norm_data {
                     ReadNormals::Standard(it) => {
-                        for (uv_idx, i) in it.enumerate() {
+                        for (i, norm) in it.enumerate() {
                             vb.interleaved.push(Interleaved {
                                 normal: if swizzle {
-                                    [i[0], -i[2], i[1]]
+                                    [norm[0], -norm[2], norm[1]]
                                 } else {
-                                    [i[0], i[1], i[2]]
+                                    [norm[0], norm[1], norm[2]]
                                 },
                                 tex_coord: {
-                                    if uv_idx < uv_temp.len() {
-                                        uv_temp[uv_idx]
+                                    if i < uv.len() {
+                                        uv[i]
                                     } else {
                                         [0.0, 0.0]
+                                    }
+                                },
+                                joint_ids: {
+                                    if i < packed_joints.len() {
+                                        packed_joints[i].ids
+                                    } else {
+                                        0x0000_0000
+                                    }
+                                },
+                                weights: {
+                                    if i < packed_joints.len() {
+                                        packed_joints[i].weights
+                                    } else {
+                                        [0.0, 0.0, 0.0, 0.0]
                                     }
                                 },
                             });
@@ -219,31 +282,6 @@ pub fn load_gltf(
                 return Err(RhError::UnsupportedFormat);
             }
             debug!("vb.interleaved.len() now = {}", vb.interleaved.len());
-
-            // Debug for future skeleton support
-            if let Some(joint_data) = reader.read_joints(0) {
-                match joint_data {
-                    ReadJoints::U8(_) => {
-                        info!("U8 joints found")
-                    }
-                    ReadJoints::U16(_) => {
-                        info!("U16 joints found")
-                    }
-                }
-            }
-            if let Some(weight_data) = reader.read_weights(0) {
-                match weight_data {
-                    ReadWeights::U8(_) => {
-                        info!("U8 weights found")
-                    }
-                    ReadWeights::U16(_) => {
-                        info!("U16 weights found")
-                    }
-                    ReadWeights::F32(_) => {
-                        info!("F32 weights found")
-                    }
-                }
-            }
 
             // Collect information
             let vertex_count = i32::try_from(pos_count)
@@ -264,11 +302,21 @@ pub fn load_gltf(
         }
     }
 
+    Ok(ObjLoaded {
+        submeshes,
+        materials: {
+            let base_path = Path::new(&obj_to_load.filename)
+                .parent()
+                .unwrap_or_else(|| Path::new("."));
+            load_materials(base_path, &document)
+        },
+        order_option: obj_to_load.order_option.clone(),
+    })
+}
+
+fn load_materials(base_path: &Path, document: &Document) -> Vec<ObjMaterial> {
     // Materials are currently handled separately because that's how the .obj
     // library works. It could be improved if we focus on glTF.
-    let base_path = Path::new(&obj_to_load.filename)
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
     let mut materials = Vec::new();
     for m in document.materials() {
         let pbr = m.pbr_metallic_roughness();
@@ -307,10 +355,5 @@ pub fn load_gltf(
         };
         materials.push(material);
     }
-
-    Ok(ObjLoaded {
-        submeshes,
-        materials,
-        order_option: obj_to_load.order_option.clone(),
-    })
+    materials
 }

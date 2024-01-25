@@ -10,7 +10,7 @@ const mat3 ACESInputMat = mat3(
     0.59719, 0.35458, 0.04823,
     0.07600, 0.90834, 0.01566,
     0.02840, 0.13383, 0.83777);
-    
+
 const mat3 ACESOutputMat = mat3(
     1.60475, -0.53108, -0.07367,
     -0.10208, 1.10813, -0.00605,
@@ -42,12 +42,12 @@ void main() {
     //colour = (colour * (1.0 + colour / 16.0)) / (colour + 1.0);
 
     // Filmic (origin?)
-    // This one was really bright compared to the others so the exposure 
+    // This one was really bright compared to the others so the exposure
     // adjustment was added but has not been tuned
     //colour = colour * 0.4; // Arbitrary exposure adjustment
     //vec3 X = max(vec3(0.0), colour - 0.004);
     //colour = (X * (6.2 * X + 0.5)) / (X * (6.2 * X + 1.7) + 0.06);
-    
+
     // Simplified ACES Filmic, Narkowicz 2015
     // Notes say it is "a very simple luminance only fit, which over saturates
     // brights. This was actually something consistent with our art direction."
@@ -68,6 +68,6 @@ void main() {
     //colour = RRTAndODTFit(colour);
     //colour = colour * ACESOutputMat;
     //colour = clamp(colour, 0.0, 1.0);
-    
+
     frag = vec4(colour, 1.0);
 }

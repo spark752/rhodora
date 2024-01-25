@@ -1,18 +1,18 @@
 use crate::{
     memory::Memory,
+    model_manager::ModelManager,
     obj_format::{ObjBatch, ObjToLoad},
-    obj_manager::ObjManager,
     pbr_lights::PbrLightTrait,
     pbr_pipeline::PbrPipeline,
     postprocess::PostProcess,
     rh_error::RhError,
-    texture::TextureManager,
+    texture::Manager,
     types::{
         AttachmentView, CameraTrait, DeviceAccess, KeyboardHandler,
         RenderFormat, SwapchainView, TransferFuture,
     },
     util,
-    vk_window::{VkWindow, VkWindowProperties},
+    vk_window::{Properties, VkWindow},
 };
 use log::{error, info};
 use std::time::Instant;
@@ -114,7 +114,7 @@ pub struct Boss {
     window_resized: bool,
     recreate_swapchain: bool,
     frame_control: FrameControl,
-    pub obj_manager: ObjManager,
+    pub model_manager: ModelManager,
     timing: Option<Timing>,
     limiter: Option<Limiter>,
 }
@@ -125,7 +125,7 @@ impl Boss {
     #[allow(clippy::too_many_lines)]
     pub fn new(
         event_loop: &EventLoop<()>,
-        properties: Option<VkWindowProperties>,
+        properties: Option<Properties>,
         sample_count: SampleCount,
         vsync: bool,
         frames_in_flight: usize,
@@ -180,7 +180,7 @@ impl Boss {
             window.graphics_queue(),
         )?;
         let postprocess = PostProcess::new(
-            DeviceAccess {
+            &DeviceAccess {
                 device: window.device().clone(),
                 set_allocator: &memory.set_allocator,
                 cbb: &mut cbb,
@@ -228,16 +228,16 @@ impl Boss {
         let pbr_pipeline = PbrPipeline::new(
             window.device().clone(),
             memory.memory_allocator.clone(),
-            RenderFormat {
+            &RenderFormat {
                 colour_format,
                 depth_format,
                 sample_count,
             },
         )?;
 
-        // Create a TextureManager and ObjectManager
-        let obj_manager = ObjManager::new(
-            Arc::new(TextureManager::new(memory.memory_allocator.clone())),
+        // Create a TextureManager and ModelManager
+        let model_manager = ModelManager::new(
+            Arc::new(Manager::new(memory.memory_allocator.clone())),
             memory.memory_allocator.clone(),
         )?;
 
@@ -264,7 +264,7 @@ impl Boss {
             window_resized: false,
             recreate_swapchain: false,
             frame_control: FrameControl::new(frames_in_flight),
-            obj_manager,
+            model_manager,
             timing: None,
             limiter: None,
         })
@@ -605,7 +605,7 @@ impl Boss {
         cbb: &mut AutoCommandBufferBuilder<T>,
         obj: &ObjToLoad,
     ) -> Result<usize, RhError> {
-        self.obj_manager.load(
+        self.model_manager.load(
             DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
@@ -624,7 +624,7 @@ impl Boss {
         obj: &ObjToLoad,
         load_result: tobj::LoadResult,
     ) -> Result<usize, RhError> {
-        self.obj_manager.process(
+        self.model_manager.process(
             DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
@@ -643,7 +643,7 @@ impl Boss {
         cbb: &mut AutoCommandBufferBuilder<T>,
         batch: ObjBatch,
     ) -> Result<Vec<usize>, RhError> {
-        self.obj_manager.load_batch(
+        self.model_manager.load_batch(
             DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
@@ -661,7 +661,7 @@ impl Boss {
         cbb: &mut AutoCommandBufferBuilder<T>,
         obj: &ObjToLoad,
     ) -> Result<usize, RhError> {
-        self.obj_manager.load_gltf(
+        self.model_manager.load_gltf(
             DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
@@ -677,11 +677,13 @@ impl Boss {
     pub fn draw_objects<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
+        camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
-        self.obj_manager.draw_all(
+        self.model_manager.draw_all(
             cbb,
             &self.memory.set_allocator,
             &self.pbr_pipeline,
+            camera,
         )
     }
 
@@ -822,8 +824,8 @@ impl Boss {
         self.window.device()
     }
 
-    pub const fn texture_manager(&self) -> &Arc<TextureManager> {
-        self.obj_manager.texture_manager()
+    pub const fn texture_manager(&self) -> &Arc<Manager> {
+        self.model_manager.texture_manager()
     }
 
     /// Get a boxed "now" future compatible with the device

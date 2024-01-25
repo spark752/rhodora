@@ -66,7 +66,7 @@ impl PostProcess {
     /// # Errors
     /// May return `RhError`
     pub fn new<T>(
-        device_access: DeviceAccess<T>,
+        device_access: &DeviceAccess<T>,
         mem_allocator: &(impl MemoryAllocator + ?Sized),
         dimensions: [u32; 2],
         input_format: vulkano::format::Format,
@@ -144,7 +144,7 @@ impl PostProcess {
             device_access.set_allocator,
             dimensions,
             input_format,
-            pipeline.clone(),
+            &pipeline,
             sampler.clone(),
         )?;
 
@@ -191,7 +191,7 @@ impl PostProcess {
             set_allocator,
             dimensions,
             self.input_format,
-            self.pipeline.clone(),
+            &self.pipeline,
             self.sampler.clone(),
         )?;
         Ok(())
@@ -227,7 +227,7 @@ impl PostProcess {
         set_allocator: &StandardDescriptorSetAllocator,
         dimensions: [u32; 2],
         format: vulkano::format::Format,
-        pipeline: Arc<GraphicsPipeline>,
+        pipeline: &Arc<GraphicsPipeline>,
         sampler: Arc<Sampler>,
     ) -> Result<
         (
@@ -240,7 +240,7 @@ impl PostProcess {
             util::create_target(mem_allocator, dimensions, format)?;
         let descriptor_set = PersistentDescriptorSet::new(
             set_allocator,
-            util::get_layout(&pipeline, 0)?.clone(),
+            util::get_layout(pipeline, 0)?.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
                 target_image_view.clone(),

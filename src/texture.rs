@@ -21,12 +21,12 @@ use vulkano::{
 /// This struct may be sent across threads, so the cache is wrapped in a
 /// `parking_lot::Mutex`. This was selected over `std::Mutex` only because
 /// Vulkano and other packages already depend on it.
-pub struct TextureManager {
+pub struct Manager {
     mem_allocator: Arc<StandardMemoryAllocator>,
     cache: Mutex<AHashMap<String, TextureView>>,
 }
 
-impl TextureManager {
+impl Manager {
     pub fn new(mem_allocator: Arc<StandardMemoryAllocator>) -> Self {
         Self {
             mem_allocator,
@@ -55,9 +55,9 @@ impl TextureManager {
         } else {
             info!("Texture cache miss: {}", filename);
             let texture_view = if filename.is_empty() {
-                load_default_texture(&self.mem_allocator, cbb)
+                load_default(&self.mem_allocator, cbb)
             } else {
-                load_texture(filename, &self.mem_allocator, cbb)
+                load(filename, &self.mem_allocator, cbb)
             }?;
             cache.insert(filename.to_string(), texture_view.clone());
             drop(cache); // Probably makes no difference but makes clippy happy
@@ -70,7 +70,7 @@ impl TextureManager {
 
 /// # Errors
 /// May return `RhError`
-pub fn load_texture<T>(
+pub fn load<T>(
     filename: &str,
     mem_allocator: &(impl MemoryAllocator + ?Sized),
     cbb: &mut AutoCommandBufferBuilder<T>,
@@ -115,7 +115,7 @@ pub fn load_png<T>(
 
 /// # Errors
 /// May return `RhError`
-pub fn load_default_texture<T>(
+pub fn load_default<T>(
     mem_allocator: &(impl MemoryAllocator + ?Sized),
     cbb: &mut AutoCommandBufferBuilder<T>,
 ) -> Result<TextureView, RhError> {

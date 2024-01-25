@@ -112,7 +112,7 @@ impl Renderer {
         let memory = Memory::new(gfx_queue.device());
         let (vertex_buffer_pool, index_buffer_pool) =
             Self::create_buffers(&memory.memory_allocator);
-        let pipeline = Self::create_pipeline(gfx_queue.clone(), format)?;
+        let pipeline = Self::create_pipeline(&gfx_queue, format)?;
         let sampler = Sampler::new(
             gfx_queue.device().clone(),
             SamplerCreateInfo {
@@ -167,7 +167,7 @@ impl Renderer {
     }
 
     fn create_pipeline(
-        gfx_queue: Arc<Queue>,
+        gfx_queue: &Arc<Queue>,
         format: vulkano::format::Format,
     ) -> Result<Arc<GraphicsPipeline>, RhError> {
         let vs = vs::load(gfx_queue.device().clone())
@@ -380,39 +380,6 @@ impl Renderer {
         Ok(())
     }
 
-    fn get_rect_scissor(
-        &self,
-        scale_factor: f32,
-        dimensions: [u32; 2],
-        rect: Rect,
-    ) -> Scissor {
-        let min = rect.min;
-        let min = egui::Pos2 {
-            x: min.x * scale_factor,
-            y: min.y * scale_factor,
-        };
-        let min = egui::Pos2 {
-            x: min.x.clamp(0.0, dimensions[0] as f32),
-            y: min.y.clamp(0.0, dimensions[1] as f32),
-        };
-        let max = rect.max;
-        let max = egui::Pos2 {
-            x: max.x * scale_factor,
-            y: max.y * scale_factor,
-        };
-        let max = egui::Pos2 {
-            x: max.x.clamp(min.x, dimensions[0] as f32),
-            y: max.y.clamp(min.y, dimensions[1] as f32),
-        };
-        Scissor {
-            origin: [min.x.round() as u32, min.y.round() as u32],
-            dimensions: [
-                (max.x.round() - min.x) as u32,
-                (max.y.round() - min.y) as u32,
-            ],
-        }
-    }
-
     #[allow(clippy::type_complexity)]
     fn create_subbuffers(
         &self,
@@ -503,7 +470,7 @@ impl Renderer {
                         continue;
                     }
 
-                    let scissors = vec![self.get_rect_scissor(
+                    let scissors = vec![get_rect_scissor(
                         scale_factor,
                         dimensions,
                         *clip_rect,
@@ -577,6 +544,41 @@ impl Renderer {
 
     pub const fn allocators(&self) -> &Memory {
         &self.memory
+    }
+}
+
+fn get_rect_scissor(
+    scale_factor: f32,
+    dimensions: [u32; 2],
+    rect: Rect,
+) -> Scissor {
+    let min = rect.min;
+    let min = egui::Pos2 {
+        x: min.x * scale_factor,
+        y: min.y * scale_factor,
+    };
+    let min = egui::Pos2 {
+        x: min.x.clamp(0.0, dimensions[0] as f32),
+        y: min.y.clamp(0.0, dimensions[1] as f32),
+    };
+    let max = rect.max;
+    let max = egui::Pos2 {
+        x: max.x * scale_factor,
+        y: max.y * scale_factor,
+    };
+    let max = egui::Pos2 {
+        x: max.x.clamp(min.x, dimensions[0] as f32),
+        y: max.y.clamp(min.y, dimensions[1] as f32),
+    };
+
+    // min.x and min.y were already clamped to be at least 0
+    #[allow(clippy::cast_sign_loss)]
+    Scissor {
+        origin: [min.x.round() as u32, min.y.round() as u32],
+        dimensions: [
+            (max.x.round() - min.x) as u32,
+            (max.y.round() - min.y) as u32,
+        ],
     }
 }
 

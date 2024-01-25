@@ -1,9 +1,7 @@
 use crate::gltf_format;
 use crate::rh_error::RhError;
-use crate::types::{
-    vertex::{Interleaved, Position, VertexBuffers},
-    Submesh,
-};
+use crate::types::Submesh;
+use crate::vertex::{Buffers, Interleaved, Position};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +44,7 @@ pub struct ObjLoaded {
 /// May return `RhError`
 pub fn load_obj(
     obj_to_load: &ObjToLoad,
-    vb: &mut VertexBuffers,
+    vb: &mut Buffers,
 ) -> Result<ObjLoaded, RhError> {
     let load_result =
         tobj::load_obj(&obj_to_load.filename, &tobj::GPU_LOAD_OPTIONS);
@@ -61,7 +59,7 @@ pub fn load_obj(
 pub fn process_obj(
     obj_to_load: &ObjToLoad,
     load_result: tobj::LoadResult,
-    vb: &mut VertexBuffers,
+    vb: &mut Buffers,
 ) -> Result<ObjLoaded, RhError> {
     let (tobj_models, tobj_materials) = load_result?;
     info!("Found {} Models", tobj_models.len());
@@ -122,6 +120,8 @@ pub fn process_obj(
                 } else {
                     [0.0, 0.0]
                 },
+                joint_ids: { 0 },
+                weights: { [0.0, 0.0, 0.0, 0.0] },
             });
         }
 
@@ -180,14 +180,14 @@ pub fn process_obj(
 }
 
 pub struct ObjBatch {
-    pub vb: VertexBuffers,
+    pub vb: Buffers,
     pub obj: Vec<ObjLoaded>,
 }
 
 impl Default for ObjBatch {
     fn default() -> Self {
         Self {
-            vb: VertexBuffers::new(),
+            vb: Buffers::new(),
             obj: Vec::new(),
         }
     }

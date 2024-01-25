@@ -81,7 +81,7 @@ impl Gui {
         event_loop: &EventLoopWindowTarget<T>,
         surface: Arc<Surface>,
         gfx_queue: Arc<Queue>,
-        config: GuiConfig,
+        config: &GuiConfig,
     ) -> Result<Self, RhError> {
         // Pick preferred format if provided, otherwise use the default one
         let format = get_surface_image_format(
