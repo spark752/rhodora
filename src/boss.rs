@@ -117,6 +117,7 @@ pub struct Boss {
     pub model_manager: ModelManager,
     timing: Option<Timing>,
     limiter: Option<Limiter>,
+    loop_start: Option<Instant>,
 }
 
 impl Boss {
@@ -267,6 +268,7 @@ impl Boss {
             model_manager,
             timing: None,
             limiter: None,
+            loop_start: None,
         })
     }
 
@@ -587,6 +589,63 @@ impl Boss {
         Ok(())
     }
 
+    /// Convenience method to render all objects in a main pass, do the
+    /// postprocess pass, submit the command buffer, and present the swapchain.
+    /// Call `render start` first, followed by any updates needed to model
+    /// positions etc. Then call this method. If you need additional passes
+    /// for GUI etc. then you will need to perform the steps indivually instead
+    /// of using this.
+    ///
+    /// # Panics
+    /// Panics if a swapchain image can not be acquired
+    pub fn render_all(
+        &mut self,
+        background: &[f32; 4],
+        camera: &impl CameraTrait,
+        lights: &impl PbrLightTrait,
+    ) {
+        // Acquire an image from the swapchain to draw. Returns a
+        // future that indicates when the image will be available and
+        // may block until it knows that.
+        let (image_index, acquire_future) = match self.acquire_next_image() {
+            Ok(r) => r,
+            Err(RhError::SwapchainOutOfDate) => return,
+            Err(e) => panic!("Could not acquire next image: {e:?}"),
+        };
+
+        // Create command buffer. For dynamic rendering, begin_rendering
+        // and end_rendering are used instead of begin_render_pass and
+        // end_render_pass.
+        let mut cbb = self.create_primary_cbb().unwrap();
+
+        // First pass into postprocess input texture via MSAA if enabled
+        self.render_pass_main(&mut cbb, background, camera, lights)
+            .unwrap();
+
+        // Draw model
+        self.draw_objects(&mut cbb, camera).unwrap();
+        self.render_pass_end(&mut cbb).unwrap();
+
+        // Second pass postprocess to swapchain image
+        self.render_pass_postprocess(&mut cbb, image_index).unwrap();
+        self.render_pass_end(&mut cbb).unwrap();
+
+        // Wait for swapchain image first. This avoids stutters and 100%
+        // CPU usage on Linux + NVIDIA when vsync is on. However it is
+        // only possible with a patch for Vulkano issue #2080 which has
+        // not yet been released. It is in a local version.
+        acquire_future.wait(None).unwrap();
+
+        // Submit command buffer & present swapchain once ready
+        self.submit_and_present(
+            cbb,
+            //previous_future,
+            Box::new(acquire_future),
+            image_index,
+        )
+        .unwrap();
+    }
+
     pub fn device_access<'a, T>(
         &'a self,
         cbb: &'a mut AutoCommandBufferBuilder<T>,
@@ -693,6 +752,7 @@ impl Boss {
         tick_rate: f32,
         limiter_option: Option<Duration>,
     ) {
+        self.loop_start = Some(Instant::now());
         self.timing = Some(Timing {
             tick_interval_us: (tick_rate * 1_000_000.0) as i64,
             time_acc_us: 0,
@@ -831,5 +891,10 @@ impl Boss {
     /// Get a boxed "now" future compatible with the device
     pub fn now_future(&self) -> Box<dyn GpuFuture> {
         vulkano::sync::now(self.window.device().clone()).boxed()
+    }
+
+    /// Elapsed time since `start_loop`
+    pub fn elapsed(&self) -> Option<Duration> {
+        self.loop_start.map(|loop_start| loop_start.elapsed())
     }
 }

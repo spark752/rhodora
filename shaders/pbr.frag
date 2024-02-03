@@ -17,7 +17,8 @@ layout(location = 2) in vec2 f_tex_coord;
 // Texture for albedo
 layout(set = 2, binding = 0) uniform sampler2D tex;
 
-// Material parameters as push constants
+// Material parameters as push constants. Push constants are faster than uniform
+// buffers but Vulkan only requires a minimum size of 128 bytes for the block.
 layout(push_constant) uniform PushConstantData {
     vec4 diffuse; // Multiplied by diffuse texture contents (alpha not used)
     float roughness;
