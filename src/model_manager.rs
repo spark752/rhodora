@@ -4,7 +4,7 @@ use crate::{
     pbr_pipeline::{PbrPipeline, PushConstantData, UniformM},
     rh_error::RhError,
     texture::Manager as TextureManager,
-    types::{CameraTrait, DeviceAccess, Submesh, TextureView},
+    types::{CameraTrait, DeviceAccess, Submesh, TextureView, MAX_JOINTS},
     util,
     vertex::{Buffers as VertexBuffers, Interleaved, Position},
 };
@@ -113,10 +113,6 @@ pub struct Mesh {
     submeshes: Vec<Submesh>,
     order: Vec<usize>,
 }
-
-// FIXME: You can't actually change this without also changing the value
-// passed to the shader macro
-const MAX_JOINTS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct JointTransforms([DualQuat; MAX_JOINTS]);

@@ -47,12 +47,11 @@ fn get_surface_image_format(
 
 pub struct GuiConfig {
     /// Preferred target image format. This should match the surface format.
-    /// Sometimes the user may prefer linear color space rather than non linear.
-    /// Hence the option. SRGB is selected by default.
+    /// Sometimes the user may prefer linear colour space. sRGB is selected
+    /// by default.
     pub preferred_format: Option<Format>,
     /// Multisample count. Defaults to 1. If you use more than 1, you'll have
-    /// to ensure your
-    /// pipeline and target image matches that.
+    /// to ensure the pipeline and target image matches that.
     pub samples: SampleCount,
 }
 

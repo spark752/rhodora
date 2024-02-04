@@ -48,3 +48,7 @@ pub trait CameraTrait {
     fn view_matrix(&self) -> glm::Mat4;
     fn proj_matrix(&self) -> glm::Mat4;
 }
+
+/// Maximum joints for a skinned mesh. You can't actually change this constant
+/// without also changing the value in the shader macro.
+pub const MAX_JOINTS: usize = 32;

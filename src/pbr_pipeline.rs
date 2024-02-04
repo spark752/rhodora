@@ -41,7 +41,7 @@ const VPL_BINDING: u32 = 0;
 // per frame, the other for model matrix which is different for each model
 pub type UniformVPL = vs::VPL;
 pub type UniformM = vs::M;
-pub type PushConstantData = fs::PushConstantData;
+pub type PushConstantData = pbr_fs::PushConstantData;
 
 pub struct PbrPipeline {
     pub pipeline: Arc<GraphicsPipeline>,
@@ -59,7 +59,8 @@ impl PbrPipeline {
         render_format: &RenderFormat,
     ) -> Result<Self, RhError> {
         let vert_shader = vs::load(device.clone())?;
-        let frag_shader = fs::load(device.clone())?;
+        let frag_shader = pbr_fs::load(device.clone())?;
+        //let frag_shader = viz_fs::load(device.clone())?; // TEST
         let pipeline =
             GraphicsPipeline::start()
                 .render_pass(PipelineRenderingCreateInfo {
@@ -173,18 +174,31 @@ impl PbrPipeline {
 }
 
 // Shaders
-// FIXME: It would be nice if we could build MAX_JOINTS from a const
 mod vs {
+    // TODO: It would be nice if we could pass the const to the shader
+    use crate::types::MAX_JOINTS;
+    #[allow(clippy::assertions_on_constants)]
+    const _: () = assert!(MAX_JOINTS == 32, "MAX_JOINTS must be 32");
+
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/pbr.vert",
-        define: [("MAX_JOINTS", "32")]
+        path: "shaders/pbr.vert.glsl",
+        define: [("MAX_JOINTS", "32")],
     }
 }
 
-mod fs {
+mod pbr_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "shaders/pbr.frag",
+        path: "shaders/pbr.frag.glsl",
+    }
+}
+
+// Visualization shader for development and debugging
+mod viz_fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        path: "shaders/pbr.frag.glsl",
+        define: [("VISUALIZE", "1")],
     }
 }

@@ -4,6 +4,25 @@
 // Based in part on learnopengl.com and on "Moving Frostbite to Physically
 // Based Rendering" by Legarde and de Rousiers, SIGGRAPH 2014
 
+// Define this for a visualization shader used for development and debugging
+#ifdef VISUALIZE
+    #define USE_AMBIENT 0   // Default
+    #define NO_AMBIENT 1
+    #define AMBIENT_ONLY 2  // Overrides `specular_mode`
+    #define USE_SPECULAR 0  // Default
+    #define NO_SPECULAR 1
+    #define SPECULAR_ONLY 2
+    #define USE_LIGHTING 0      // Default
+    #define SHOW_NORMALS 1      // Overrides lighting
+    #define SHOW_ROUGHNESS 2    // Overrides lighting
+    #define SHOW_METALNESS 3    // Overrides lighting
+
+    // TODO: Move these to push constants
+    uint ambient_mode = USE_AMBIENT;
+    uint specular_mode = USE_SPECULAR;
+    uint override_mode = SHOW_ROUGHNESS;
+#endif
+
 // Inputs from vertex shaders
 layout(location = 0) in vec3 f_normal;
 layout(location = 1) in vec3 f_position;
@@ -62,12 +81,9 @@ void main() {
     float roughness = clamp(material.roughness, 0.1, 1.0);
     float metalness = clamp(material.metalness, 0.0, 1.0);
 
-    // Ambient light level is in last element of the ambient vector
-    float amb_level = vpl.ambient.w;
-
     vec4 colour_tex = texture(tex, f_tex_coord);
     float alpha = colour_tex.a;
-    vec3 albedo = vec3(colour_tex.rgb) * vec3(material.diffuse.rgb);
+    vec3 albedo = colour_tex.rgb * material.diffuse.rgb;
 
     // Use a standard value for reflectance for non-metals. Else use the albedo
     // value.
@@ -101,12 +117,49 @@ void main() {
         // Add to total. There should be some multiply PI here somewhere but
         // since the input light level is just an arbitrary value it isn't
         // really necessary.
-        Lout += (kD * albedo / PI + specular) * radiance * NdotL;
+        #ifdef VISUALIZE
+            if (specular_mode == NO_SPECULAR) {
+                Lout += (kD * albedo / PI) * radiance * NdotL;
+            } else if (specular_mode == SPECULAR_ONLY) {
+                Lout += specular * radiance * NdotL;
+            } else {
+                Lout += (kD * albedo / PI + specular) * radiance * NdotL;
+            }
+        #else
+            Lout += (kD * albedo / PI + specular) * radiance * NdotL;
+        #endif
     }
 
     // Add some ambient. Very important for metals that have no diffuse.
-    vec3 ambient = amb_level * albedo;
-    vec3 shade = Lout + ambient;
+    // Ambient light level is in last element of the ambient vector
+    vec3 ambient = vpl.ambient.rgb * albedo * vpl.ambient.a;
+    #ifdef VISUALIZE
+        vec3 shade = Lout + ambient;
+        if (ambient_mode == NO_AMBIENT) {
+            shade = Lout;
+        } else if (ambient_mode == AMBIENT_ONLY) {
+            shade = ambient;
+        }
+    #else
+        vec3 shade = Lout + ambient;
+    #endif
+
+    // Overrides
+    #ifdef VISUALIZE
+        switch (override_mode) {
+            case SHOW_NORMALS:
+                shade = vec3((f_normal + 1.0) * 0.5);
+                break;
+            case SHOW_ROUGHNESS:
+                shade = vec3(roughness);
+                break;
+            case SHOW_METALNESS:
+                shade = vec3(metalness);
+                break;
+            default:
+                break;
+        }
+    #endif
 
     // Result is HDR and in linear space but let postprocess deal with that
     frag = vec4(shade, alpha);
