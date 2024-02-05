@@ -1,7 +1,7 @@
 use crate::{
+    file_import::{Batch, FileToLoad},
     memory::Memory,
     model_manager::ModelManager,
-    obj_format::{ObjBatch, ObjToLoad},
     pbr_lights::PbrLightTrait,
     pbr_pipeline::PbrPipeline,
     postprocess::PostProcess,
@@ -12,6 +12,7 @@ use crate::{
         RenderFormat, SwapchainView, TransferFuture,
     },
     util,
+    vertex::SkinnedFormat,
     vk_window::{Properties, VkWindow},
 };
 use log::{error, info};
@@ -110,7 +111,6 @@ pub struct Boss {
     pub viewport: Viewport,
     pub depth_image_view: AttachmentView,
     msaa_option: Option<AttachmentView>,
-    pub pbr_pipeline: PbrPipeline,
     window_resized: bool,
     recreate_swapchain: bool,
     frame_control: FrameControl,
@@ -226,7 +226,7 @@ impl Boss {
         };
 
         // Create a PBR capable pipeline as the default
-        let pbr_pipeline = PbrPipeline::new(
+        let pbr_pipeline = PbrPipeline::new::<SkinnedFormat>(
             window.device().clone(),
             memory.memory_allocator.clone(),
             &RenderFormat {
@@ -240,6 +240,7 @@ impl Boss {
         let model_manager = ModelManager::new(
             Arc::new(Manager::new(memory.memory_allocator.clone())),
             memory.memory_allocator.clone(),
+            pbr_pipeline,
         )?;
 
         // Wait for the GPU to finish the commands submitted for the
@@ -261,7 +262,6 @@ impl Boss {
             viewport,
             depth_image_view,
             msaa_option,
-            pbr_pipeline,
             window_resized: false,
             recreate_swapchain: false,
             frame_control: FrameControl::new(frames_in_flight),
@@ -437,7 +437,7 @@ impl Boss {
             return Err(RhError::PipelineError);
         };
         cbb.set_viewport(0, [self.viewport.clone()]);
-        if let Err(e) = self.pbr_pipeline.start_pass(
+        if let Err(e) = self.model_manager.start_pass(
             cbb,
             &self.memory.set_allocator,
             camera,
@@ -589,7 +589,7 @@ impl Boss {
         Ok(())
     }
 
-    /// Convenience method to render all objects in a main pass, do the
+    /// Convenience method to render all models in a main pass, do the
     /// postprocess pass, submit the command buffer, and present the swapchain.
     /// Call `render start` first, followed by any updates needed to model
     /// positions etc. Then call this method. If you need additional passes
@@ -623,7 +623,7 @@ impl Boss {
             .unwrap();
 
         // Draw model
-        self.draw_objects(&mut cbb, camera).unwrap();
+        self.draw_models(&mut cbb, camera).unwrap();
         self.render_pass_end(&mut cbb).unwrap();
 
         // Second pass postprocess to swapchain image
@@ -657,42 +657,47 @@ impl Boss {
         }
     }
 
+    /// Convenience function that creates a batch, loads a single mesh into
+    /// it from a file, then adds that to the model manager. Useful if you
+    /// only have one model in the scene. Otherwise it is much more efficient
+    /// to create a batch and use `load_batch` so that everything is grouped
+    /// together.
+    ///
+    /// This function is equivalent to `load_model`.
+    ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_obj<T>(
+    pub fn load_mesh<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        obj: &ObjToLoad,
+        file: &FileToLoad,
     ) -> Result<usize, RhError> {
         self.model_manager.load(
-            DeviceAccess {
+            &mut DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
                 cbb,
             },
-            &self.pbr_pipeline,
-            obj,
+            file,
         )
     }
 
+    /// Convenience function that creates a batch, loads a single mesh into
+    /// it from a file, then adds that to the model manager. Useful if you
+    /// only have one model in the scene. Otherwise it is much more efficient
+    /// to create a batch and use `load_batch` so that everything is grouped
+    /// together.
+    ///
+    /// This function is equivalent to `load_mesh`.
+    ///
     /// # Errors
     /// May return `RhError`
-    pub fn process_obj<T>(
+    pub fn load_model<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        obj: &ObjToLoad,
-        load_result: tobj::LoadResult,
+        file: &FileToLoad,
     ) -> Result<usize, RhError> {
-        self.model_manager.process(
-            DeviceAccess {
-                device: self.window.device().clone(),
-                set_allocator: &self.memory.set_allocator,
-                cbb,
-            },
-            &self.pbr_pipeline,
-            obj,
-            load_result,
-        )
+        self.load_mesh(cbb, file)
     }
 
     /// # Errors
@@ -700,50 +705,27 @@ impl Boss {
     pub fn load_batch<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: ObjBatch,
+        batch: Batch<SkinnedFormat>,
     ) -> Result<Vec<usize>, RhError> {
         self.model_manager.load_batch(
-            DeviceAccess {
+            &mut DeviceAccess {
                 device: self.window.device().clone(),
                 set_allocator: &self.memory.set_allocator,
                 cbb,
             },
-            &self.pbr_pipeline,
             batch,
         )
     }
 
     /// # Errors
     /// May return `RhError`
-    pub fn load_gltf<T>(
-        &mut self,
-        cbb: &mut AutoCommandBufferBuilder<T>,
-        obj: &ObjToLoad,
-    ) -> Result<usize, RhError> {
-        self.model_manager.load_gltf(
-            DeviceAccess {
-                device: self.window.device().clone(),
-                set_allocator: &self.memory.set_allocator,
-                cbb,
-            },
-            &self.pbr_pipeline,
-            obj,
-        )
-    }
-
-    /// # Errors
-    /// May return `RhError`
-    pub fn draw_objects<T>(
+    pub fn draw_models<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
         camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
-        self.model_manager.draw_all(
-            cbb,
-            &self.memory.set_allocator,
-            &self.pbr_pipeline,
-            camera,
-        )
+        self.model_manager
+            .draw_all(cbb, &self.memory.set_allocator, camera)
     }
 
     #[allow(clippy::cast_possible_truncation)]

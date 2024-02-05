@@ -3,7 +3,7 @@ use crate::{
     rh_error::RhError,
     types::{CameraTrait, RenderFormat},
     util,
-    vertex::{Interleaved, Position},
+    vertex::Position,
 };
 use std::sync::Arc;
 use vulkano::{
@@ -51,9 +51,12 @@ pub struct PbrPipeline {
 }
 
 impl PbrPipeline {
+    /// Create a PBR pipeline compatible with a `Position` vertex buffer and
+    /// an interleaved vertex buffer of type T.
+    ///
     /// # Errors
     /// May return `RhError`
-    pub fn new(
+    pub fn new<T: Vertex>(
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
         render_format: &RenderFormat,
@@ -75,10 +78,7 @@ impl PbrPipeline {
                     ..Default::default()
                 })
                 .color_blend_state(util::alpha_blend_enable())
-                .vertex_input_state([
-                    Position::per_vertex(),
-                    Interleaved::per_vertex(),
-                ])
+                .vertex_input_state([Position::per_vertex(), T::per_vertex()])
                 .input_assembly_state(InputAssemblyState::new())
                 .vertex_shader(
                     vert_shader

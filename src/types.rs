@@ -14,15 +14,6 @@ pub type AttachmentView = Arc<ImageView<AttachmentImage>>;
 pub type SwapchainView = Arc<ImageView<SwapchainImage>>;
 pub type TransferFuture = FenceSignalFuture<CommandBufferExecFuture<NowFuture>>;
 
-#[derive(Copy, Clone)]
-pub struct Submesh {
-    pub index_count: u32,
-    pub first_index: u32,
-    pub vertex_offset: i32,
-    pub vertex_count: i32,
-    pub material_id: Option<usize>,
-}
-
 pub struct RenderFormat {
     pub colour_format: vulkano::format::Format,
     pub depth_format: vulkano::format::Format,

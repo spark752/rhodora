@@ -1,34 +1,32 @@
-use crate::obj_format::{ObjLoaded, ObjMaterial, ObjToLoad};
-use crate::rh_error::RhError;
-use crate::types::Submesh;
-use crate::vertex::{Buffers as VertexBuffers, Interleaved, Position};
-use gltf::mesh::util::{
-    ReadIndices, ReadJoints, ReadNormals, ReadPositions, ReadTexCoords,
-    ReadWeights,
+use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
+use crate::{
+    rh_error::RhError,
+    vertex::{BaseBuffers, InterBuffers, InterVertexTrait},
 };
 use gltf::{
-    accessor::Dimensions, buffer, image::Source, mesh::Mode, Document, Gltf,
-    Semantic,
+    accessor::Dimensions,
+    buffer,
+    image::Source,
+    mesh::util::{
+        ReadIndices, ReadJoints, ReadNormals, ReadPositions, ReadTexCoords,
+        ReadWeights,
+    },
+    mesh::Mode,
+    Document, Gltf, Semantic,
 };
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use std::{fs, io, path::Path};
 
-struct PackedJoints {
-    ids: u32,
+struct TempJoints {
+    id_array: [u8; 4],
     weights: [f32; 4],
 }
 
-impl PackedJoints {
+impl TempJoints {
     /// Packs joint data for a vertex into the vertex format. Takes ownership
     /// of arguments.
     const fn new(id_array: [u8; 4], weights: [f32; 4]) -> Self {
-        Self {
-            ids: ((id_array[0] as u32) << 24)
-                + ((id_array[1] as u32) << 16)
-                + ((id_array[2] as u32) << 8)
-                + (id_array[3] as u32),
-            weights,
-        }
+        Self { id_array, weights }
     }
 }
 
@@ -59,21 +57,22 @@ where
 /// May return `RhError`
 #[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_lines)]
-pub fn load_gltf(
-    obj_to_load: &ObjToLoad,
-    vb: &mut VertexBuffers,
-) -> Result<ObjLoaded, RhError> {
-    let scale = obj_to_load.scale;
-    let swizzle = obj_to_load.swizzle;
+pub fn load<T: InterVertexTrait>(
+    file: &FileToLoad,
+    vb_base: &mut BaseBuffers,
+    vb_inter: &mut InterBuffers<T>,
+) -> Result<MeshLoaded, RhError> {
+    let scale = file.scale;
+    let swizzle = file.swizzle;
     let mut submeshes = Vec::new();
     let mut first_index = 0u32;
     let mut vertex_offset = 0i32;
 
     // Load the gltf file and mesh data but not the textures
-    let (document, buffers) = load_impl(&obj_to_load.filename)?;
+    let (document, buffers) = load_impl(&file.filename)?;
     info!(
         "{}, buffer count={}, buffer length={}, scale={}, swizzle={} ",
-        obj_to_load.filename,
+        file.filename,
         buffers.len(),
         buffers[0].len(),
         scale,
@@ -136,18 +135,18 @@ pub fn load_gltf(
                 match idx_data {
                     ReadIndices::U8(it) => {
                         for i in it {
-                            vb.indices.push(u16::from(i));
+                            vb_base.push_index(u16::from(i));
                         }
                     }
                     ReadIndices::U16(it) => {
                         for i in it {
-                            vb.indices.push(i);
+                            vb_base.push_index(i);
                         }
                     }
                     ReadIndices::U32(it) => {
                         info!("Trying to convert 32 bit indices to 16 bit");
                         for i in it {
-                            vb.indices.push(
+                            vb_base.push_index(
                                 u16::try_from(i)
                                     .map_err(|_| RhError::IndexTooLarge)?,
                             );
@@ -158,20 +157,20 @@ pub fn load_gltf(
                 warn!("Missing mesh indices");
                 return Err(RhError::UnsupportedFormat);
             };
-            debug!("vb.indices.len() now = {}", vb.indices.len());
 
             // Read the positions, scale & convert to Z axis up if needed, and store
             if let Some(pos_data) = reader.read_positions() {
                 match pos_data {
                     ReadPositions::Standard(it) => {
                         for i in it {
-                            vb.positions.push(Position {
-                                position: if swizzle {
+                            let p = {
+                                if swizzle {
                                     [i[0] * scale, -i[2] * scale, i[1] * scale]
                                 } else {
                                     [i[0] * scale, i[1] * scale, i[2] * scale]
-                                },
-                            });
+                                }
+                            };
+                            vb_base.push_position(&p);
                         }
                     }
                     ReadPositions::Sparse(_) => {
@@ -183,7 +182,6 @@ pub fn load_gltf(
                 warn!("Missing mesh positions");
                 return Err(RhError::UnsupportedFormat);
             }
-            debug!("vb.positions.len() now = {}", vb.positions.len());
 
             // Read the texture coordinates if they exist and store them in a
             // temporary buffer so that they can be interleaved with normals
@@ -202,7 +200,7 @@ pub fn load_gltf(
 
             // Read the joints if they exist and store them in a temporary
             // buffer so they can be interleaved with normals
-            let mut packed_joints = Vec::new();
+            let mut temp_joints = Vec::new();
             if let Some(d) = reader.read_joints(0) {
                 match d {
                     ReadJoints::U8(jit) => {
@@ -214,7 +212,7 @@ pub fn load_gltf(
                                         id_array,
                                         weights
                                     );
-                                    packed_joints.push(PackedJoints::new(
+                                    temp_joints.push(TempJoints::new(
                                         id_array, weights,
                                     ));
                                 }
@@ -244,34 +242,37 @@ pub fn load_gltf(
                 match norm_data {
                     ReadNormals::Standard(it) => {
                         for (i, norm) in it.enumerate() {
-                            vb.interleaved.push(Interleaved {
-                                normal: if swizzle {
-                                    [norm[0], -norm[2], norm[1]]
-                                } else {
-                                    [norm[0], norm[1], norm[2]]
-                                },
-                                tex_coord: {
-                                    if i < uv.len() {
-                                        uv[i]
+                            vb_inter.push(
+                                &ImportVertex {
+                                    normal: if swizzle {
+                                        [norm[0], -norm[2], norm[1]]
                                     } else {
-                                        [0.0, 0.0]
-                                    }
-                                },
-                                joint_ids: {
-                                    if i < packed_joints.len() {
-                                        packed_joints[i].ids
-                                    } else {
-                                        0x0000_0000
-                                    }
-                                },
-                                weights: {
-                                    if i < packed_joints.len() {
-                                        packed_joints[i].weights
-                                    } else {
-                                        [0.0, 0.0, 0.0, 0.0]
-                                    }
-                                },
-                            });
+                                        [norm[0], norm[1], norm[2]]
+                                    },
+                                    tex_coord: {
+                                        if i < uv.len() {
+                                            uv[i]
+                                        } else {
+                                            [0.0, 0.0]
+                                        }
+                                    },
+                                    joint_ids: {
+                                        if i < temp_joints.len() {
+                                            temp_joints[i].id_array
+                                        } else {
+                                            [0, 0, 0, 0]
+                                        }
+                                    },
+                                    weights: {
+                                        if i < temp_joints.len() {
+                                            temp_joints[i].weights
+                                        } else {
+                                            [0.0, 0.0, 0.0, 0.0]
+                                        }
+                                    },
+                                }
+                                .into(),
+                            );
                         }
                     }
                     ReadNormals::Sparse(_) => {
@@ -281,7 +282,6 @@ pub fn load_gltf(
             } else {
                 return Err(RhError::UnsupportedFormat);
             }
-            debug!("vb.interleaved.len() now = {}", vb.interleaved.len());
 
             // Collect information
             let vertex_count = i32::try_from(pos_count)
@@ -302,19 +302,19 @@ pub fn load_gltf(
         }
     }
 
-    Ok(ObjLoaded {
+    Ok(MeshLoaded {
         submeshes,
         materials: {
-            let base_path = Path::new(&obj_to_load.filename)
+            let base_path = Path::new(&file.filename)
                 .parent()
                 .unwrap_or_else(|| Path::new("."));
             load_materials(base_path, &document)
         },
-        order_option: obj_to_load.order_option.clone(),
+        order_option: file.order_option.clone(),
     })
 }
 
-fn load_materials(base_path: &Path, document: &Document) -> Vec<ObjMaterial> {
+fn load_materials(base_path: &Path, document: &Document) -> Vec<Material> {
     // Materials are currently handled separately because that's how the .obj
     // library works. It could be improved if we focus on glTF.
     let mut materials = Vec::new();
@@ -347,7 +347,7 @@ fn load_materials(base_path: &Path, document: &Document) -> Vec<ObjMaterial> {
             metalness,
         );
 
-        let material = ObjMaterial {
+        let material = Material {
             colour_filename,
             diffuse,
             roughness,
