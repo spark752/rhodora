@@ -89,18 +89,18 @@ impl From<JointTransforms> for [[[f32; 4]; 2]; MAX_JOINTS] {
 
 /// Enum of supported vertex formats. Perhaps not all are constructed.
 #[allow(dead_code)]
-enum TheFeels {
+enum DvbWrapper {
     Unskinned(DeviceVertexBuffers<UnskinnedFormat>),
     Skinned(DeviceVertexBuffers<SkinnedFormat>),
 }
 
-impl From<DeviceVertexBuffers<UnskinnedFormat>> for TheFeels {
+impl From<DeviceVertexBuffers<UnskinnedFormat>> for DvbWrapper {
     fn from(f: DeviceVertexBuffers<UnskinnedFormat>) -> Self {
         Self::Unskinned(f)
     }
 }
 
-impl From<DeviceVertexBuffers<SkinnedFormat>> for TheFeels {
+impl From<DeviceVertexBuffers<SkinnedFormat>> for DvbWrapper {
     fn from(f: DeviceVertexBuffers<SkinnedFormat>) -> Self {
         Self::Skinned(f)
     }
@@ -117,10 +117,7 @@ struct Model {
 
 pub struct ModelManager {
     models: Vec<Model>,
-    //dvbs: Vec<DeviceVertexBuffers<dyn InterVertex + Vertex>>, // Won't work
-    //dvbs: Vec<Box<DeviceVertexBuffers<dyn Vertex>>>, // Won't work
-    //dvbs: Vec<DeviceVertexBuffers<SkinnedFormat>>,
-    dvbs: Vec<TheFeels>, // Works!
+    dvbs: Vec<DvbWrapper>,
     materials: Vec<PbrMaterial>,
     texture_manager: Arc<TextureManager>,
     mem_allocator: Arc<StandardMemoryAllocator>,
@@ -164,7 +161,7 @@ impl ModelManager {
     ) -> Result<Vec<usize>, RhError>
     where
         U: VertexTrait + InterVertexTrait,
-        TheFeels: From<DeviceVertexBuffers<U>>,
+        DvbWrapper: From<DeviceVertexBuffers<U>>,
     {
         // Successful return will be a vector of the mesh indices
         let mut ret = Vec::new();
@@ -222,11 +219,22 @@ impl ModelManager {
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch<T>(
+    //
+    // Clippy doesn't like U being restricted by the private trait:
+    // "Having private types or traits in item bounds makes it less clear what
+    // interface the item actually provides."
+    // But the restriction is needed and `DvbWrapper` not ready to be public
+    // yet.
+    #[allow(private_bounds)]
+    pub fn load_batch<T, U>(
         &mut self,
         device_access: &mut DeviceAccess<T>,
-        batch: Batch<SkinnedFormat>, // Not a reference
-    ) -> Result<Vec<usize>, RhError> {
+        batch: Batch<U>, // Not a reference
+    ) -> Result<Vec<usize>, RhError>
+    where
+        U: VertexTrait + InterVertexTrait,
+        DvbWrapper: From<DeviceVertexBuffers<U>>,
+    {
         self.load_batch_impl(device_access, batch, None)
     }
 
@@ -289,7 +297,9 @@ impl ModelManager {
         device_access: &mut DeviceAccess<T>,
         file: &FileToLoad,
     ) -> Result<usize, RhError> {
-        let mut batch = Batch::new();
+        // Vertex format was once hard coded in lowest levels but now has made
+        // it all the way up to here. Still some more to go.
+        let mut batch = Batch::<SkinnedFormat>::new();
         batch.load(file)?;
         let ret = self.load_batch(device_access, batch)?;
         Ok(ret[0])
@@ -395,10 +405,10 @@ impl ModelManager {
         }
         let dvb_index = self.models[index].dvb_index;
         match &self.dvbs[dvb_index] {
-            TheFeels::Skinned(dvb) => {
+            DvbWrapper::Skinned(dvb) => {
                 bind_dvbs(cbb, dvb);
             }
-            TheFeels::Unskinned(dvb) => {
+            DvbWrapper::Unskinned(dvb) => {
                 bind_dvbs(cbb, dvb);
             } // Adding more vertex formats will requre more duplicate code here
               // but the build will fail to tell us that.

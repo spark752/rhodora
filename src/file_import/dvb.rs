@@ -9,7 +9,7 @@ use vulkano::{
     memory::allocator::{
         AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator,
     },
-    pipeline::graphics::vertex_input::Vertex,
+    pipeline::graphics::vertex_input::Vertex as VertexTrait,
 };
 
 /// Buffers that pass vertex data to the GPU. Note that `DeviceVertexBuffers`
@@ -21,7 +21,7 @@ pub struct DeviceVertexBuffers<T> {
     pub indices: Subbuffer<[u16]>,
 }
 
-impl<T: Vertex + InterVertexTrait> DeviceVertexBuffers<T> {
+impl<T: VertexTrait + InterVertexTrait> DeviceVertexBuffers<T> {
     /// Note that `DeviceVertexBuffers` is generic over any sized type
     /// for any sort of vertices but this method requires a type with the
     /// Vulkano `Vertex` trait and the Rhodora `InterVertexTrait` used by other

@@ -7,8 +7,9 @@ use crate::vertex::{BaseBuffers, InterBuffers, InterVertexTrait};
 use std::path::Path;
 
 /// A batch is used to load multiple files into the same buffers. This type
-/// is generic for different vertex formats. They must implement `BuffersTrait`
-/// so the format in the file can be converted to the requested format.
+/// is generic for different vertex formats. They must implement
+/// `InterVertexTrait` so the format in the file can be converted to the
+/// requested format.
 #[derive(Default)]
 pub struct Batch<T: InterVertexTrait> {
     pub vb_base: BaseBuffers,
