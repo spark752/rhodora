@@ -38,16 +38,16 @@ pub trait InterVertexTrait: Copy + Default + From<ImportVertex> {}
 /// Vertex format for the interleaved buffer of unskinned meshes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
-pub struct UnskinnedFormat {
+pub struct RigidFormat {
     #[format(R32G32B32_SFLOAT)]
     pub normal: [f32; 3],
     #[format(R32G32_SFLOAT)]
     pub tex_coord: [f32; 2],
 }
 
-impl InterVertexTrait for UnskinnedFormat {}
+impl InterVertexTrait for RigidFormat {}
 
-impl From<ImportVertex> for UnskinnedFormat {
+impl From<ImportVertex> for RigidFormat {
     fn from(f: ImportVertex) -> Self {
         Self {
             normal: f.normal,

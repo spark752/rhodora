@@ -1,12 +1,11 @@
 use crate::{
     file_import::{Batch, FileToLoad},
     memory::Memory,
-    model_manager::ModelManager,
+    model_manager::Manager as ModelManager,
     pbr_lights::PbrLightTrait,
-    pbr_pipeline::PbrPipeline,
     postprocess::PostProcess,
     rh_error::RhError,
-    texture::Manager,
+    texture::Manager as TextureManager,
     types::{
         AttachmentView, CameraTrait, DeviceAccess, KeyboardHandler,
         RenderFormat, SwapchainView, TransferFuture,
@@ -101,12 +100,10 @@ pub struct Limiter {
 
 pub struct Boss {
     pub window: VkWindow,
+    render_format: RenderFormat,
     pub memory: Memory,
-    sample_count: SampleCount,
     pub swapchain: Arc<Swapchain>,
     pub swapchain_views: Vec<SwapchainView>,
-    pub colour_format: Format,
-    pub depth_format: Format,
     pub postprocess: PostProcess,
     pub viewport: Viewport,
     pub depth_image_view: AttachmentView,
@@ -225,22 +222,17 @@ impl Boss {
             )?)
         };
 
-        // Create a PBR capable pipeline as the default
-        let pbr_pipeline = PbrPipeline::new::<SkinnedFormat>(
+        let render_format = RenderFormat {
+            colour_format,
+            depth_format,
+            sample_count,
+        };
+
+        // Create a ModelManager
+        let model_manager = ModelManager::new(
             window.device().clone(),
             memory.memory_allocator.clone(),
-            &RenderFormat {
-                colour_format,
-                depth_format,
-                sample_count,
-            },
-        )?;
-
-        // Create a TextureManager and ModelManager
-        let model_manager = ModelManager::new(
-            Arc::new(Manager::new(memory.memory_allocator.clone())),
-            memory.memory_allocator.clone(),
-            pbr_pipeline,
+            &render_format,
         )?;
 
         // Wait for the GPU to finish the commands submitted for the
@@ -252,12 +244,10 @@ impl Boss {
 
         Ok(Self {
             window,
+            render_format,
             memory,
-            sample_count,
             swapchain,
             swapchain_views,
-            colour_format,
-            depth_format,
             postprocess,
             viewport,
             depth_image_view,
@@ -280,15 +270,15 @@ impl Boss {
         self.depth_image_view = util::create_depth(
             &self.memory.memory_allocator,
             dimensions.into(),
-            self.depth_format,
-            self.sample_count,
+            self.render_format.depth_format,
+            self.render_format.sample_count,
         )?;
         if self.msaa_option.is_some() {
             self.msaa_option = Some(util::create_msaa(
                 &self.memory.memory_allocator,
                 dimensions.into(),
-                self.colour_format,
-                self.sample_count,
+                self.render_format.colour_format,
+                self.render_format.sample_count,
             )?);
         }
         Ok(())
@@ -460,11 +450,7 @@ impl Boss {
     }
 
     pub const fn render_format(&self) -> RenderFormat {
-        RenderFormat {
-            colour_format: self.colour_format,
-            depth_format: self.depth_format,
-            sample_count: self.sample_count,
-        }
+        self.render_format
     }
 
     /// # Errors
@@ -866,7 +852,7 @@ impl Boss {
         self.window.device()
     }
 
-    pub const fn texture_manager(&self) -> &Arc<Manager> {
+    pub const fn texture_manager(&self) -> &Arc<TextureManager> {
         self.model_manager.texture_manager()
     }
 

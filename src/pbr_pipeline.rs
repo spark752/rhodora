@@ -44,7 +44,7 @@ pub type UniformM = vs::M;
 pub type PushConstantData = pbr_fs::PushConstantData;
 
 pub struct PbrPipeline {
-    pub pipeline: Arc<GraphicsPipeline>,
+    pub graphics: Arc<GraphicsPipeline>,
     pub sampler: Arc<Sampler>,
     pub vpl_pool: SubbufferAllocator,
     pub m_pool: SubbufferAllocator,
@@ -124,7 +124,7 @@ impl PbrPipeline {
             },
         );
         Ok(Self {
-            pipeline,
+            graphics: pipeline,
             sampler,
             vpl_pool,
             m_pool,
@@ -132,7 +132,7 @@ impl PbrPipeline {
     }
 
     pub fn layout(&self) -> &Arc<PipelineLayout> {
-        self.pipeline.layout()
+        self.graphics.layout()
     }
 
     /// # Errors
@@ -159,10 +159,10 @@ impl PbrPipeline {
         };
         let desc_set = PersistentDescriptorSet::new(
             descriptor_set_allocator,
-            util::get_layout(&self.pipeline, VPL_SET as usize)?.clone(),
+            util::get_layout(&self.graphics, VPL_SET as usize)?.clone(),
             [WriteDescriptorSet::buffer(VPL_BINDING, vpl_buffer)],
         )?;
-        cbb.bind_pipeline_graphics(self.pipeline.clone())
+        cbb.bind_pipeline_graphics(self.graphics.clone())
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.layout().clone(),

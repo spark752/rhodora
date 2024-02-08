@@ -14,6 +14,7 @@ pub type AttachmentView = Arc<ImageView<AttachmentImage>>;
 pub type SwapchainView = Arc<ImageView<SwapchainImage>>;
 pub type TransferFuture = FenceSignalFuture<CommandBufferExecFuture<NowFuture>>;
 
+#[derive(Clone, Copy, Debug)]
 pub struct RenderFormat {
     pub colour_format: vulkano::format::Format,
     pub depth_format: vulkano::format::Format,
