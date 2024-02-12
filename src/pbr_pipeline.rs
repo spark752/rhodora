@@ -3,7 +3,6 @@ use crate::{
     rh_error::RhError,
     types::{CameraTrait, RenderFormat},
     util,
-    vertex::Position,
 };
 use std::sync::Arc;
 use vulkano::{
@@ -78,7 +77,7 @@ impl PbrPipeline {
                     ..Default::default()
                 })
                 .color_blend_state(util::alpha_blend_enable())
-                .vertex_input_state([Position::per_vertex(), T::per_vertex()])
+                .vertex_input_state(T::per_vertex())
                 .input_assembly_state(InputAssemblyState::new())
                 .vertex_shader(
                     vert_shader

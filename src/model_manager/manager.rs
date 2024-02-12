@@ -132,7 +132,7 @@ impl Manager {
         let dvb = DeviceVertexBuffers::<U>::new(
             device_access.cbb,
             self.mem_allocator.clone(),
-            batch.vb_base,
+            batch.vb_index,
             batch.vb_inter,
         )?;
         self.dvbs.push(dvb.into());
@@ -368,11 +368,8 @@ impl Manager {
             cbb: &mut AutoCommandBufferBuilder<T>,
             dvb: &DeviceVertexBuffers<U>,
         ) {
-            cbb.bind_vertex_buffers(
-                VERTEX_BINDING,
-                (dvb.positions.clone(), dvb.interleaved.clone()),
-            )
-            .bind_index_buffer(dvb.indices.clone());
+            cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
+                .bind_index_buffer(dvb.indices.clone());
         }
         let dvb_index = self.models[index].dvb_index;
         match &self.dvbs[dvb_index] {

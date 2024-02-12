@@ -5,26 +5,13 @@ use crate::file_import::ImportVertex;
 use bytemuck::{Pod, Zeroable};
 use vulkano::pipeline::graphics::vertex_input::Vertex;
 
-/// Vertex format for the position buffer of all meshes
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
-pub struct Position {
-    #[format(R32G32B32_SFLOAT)]
-    pub position: [f32; 3],
-}
-
-/// Holds the position and indices for all standard vertex formats
+/// Indices for all standard vertex formats
 #[derive(Default)]
-pub struct BaseBuffers {
-    pub positions: Vec<Position>,
+pub struct IndexBuffer {
     pub indices: Vec<u16>,
 }
 
-impl BaseBuffers {
-    pub fn push_position(&mut self, pos: &[f32; 3]) {
-        self.positions.push(Position { position: *pos });
-    }
-
+impl IndexBuffer {
     pub fn push_index(&mut self, idx: u16) {
         self.indices.push(idx);
     }
@@ -40,6 +27,8 @@ pub trait InterVertexTrait: Copy + Default + From<ImportVertex> {}
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
 pub struct RigidFormat {
     #[format(R32G32B32_SFLOAT)]
+    pub position: [f32; 3],
+    #[format(R32G32B32_SFLOAT)]
     pub normal: [f32; 3],
     #[format(R32G32_SFLOAT)]
     pub tex_coord: [f32; 2],
@@ -50,6 +39,7 @@ impl InterVertexTrait for RigidFormat {}
 impl From<ImportVertex> for RigidFormat {
     fn from(f: ImportVertex) -> Self {
         Self {
+            position: f.position,
             normal: f.normal,
             tex_coord: f.tex_coord,
         }
@@ -60,6 +50,8 @@ impl From<ImportVertex> for RigidFormat {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod, Vertex)]
 pub struct SkinnedFormat {
+    #[format(R32G32B32_SFLOAT)]
+    pub position: [f32; 3],
     #[format(R32G32B32_SFLOAT)]
     pub normal: [f32; 3],
     #[format(R32G32_SFLOAT)]
@@ -75,6 +67,7 @@ impl InterVertexTrait for SkinnedFormat {}
 impl From<ImportVertex> for SkinnedFormat {
     fn from(f: ImportVertex) -> Self {
         Self {
+            position: f.position,
             normal: f.normal,
             tex_coord: f.tex_coord,
             joint_ids: (u32::from(f.joint_ids[0]) << 24)
@@ -88,11 +81,11 @@ impl From<ImportVertex> for SkinnedFormat {
 
 /// Interleaved vertex buffer generic over different formats
 #[derive(Default)]
-pub struct InterBuffers<T: InterVertexTrait> {
+pub struct InterBuffer<T: InterVertexTrait> {
     pub interleaved: Vec<T>,
 }
 
-impl<T: InterVertexTrait> InterBuffers<T> {
+impl<T: InterVertexTrait> InterBuffer<T> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()

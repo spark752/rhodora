@@ -1,7 +1,7 @@
 use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
 use crate::{
     rh_error::RhError,
-    vertex::{BaseBuffers, InterBuffers, InterVertexTrait},
+    vertex::{IndexBuffer, InterBuffer, InterVertexTrait},
 };
 use gltf::{
     accessor::Dimensions,
@@ -59,8 +59,8 @@ where
 #[allow(clippy::too_many_lines)]
 pub fn load<T: InterVertexTrait>(
     file: &FileToLoad,
-    vb_base: &mut BaseBuffers,
-    vb_inter: &mut InterBuffers<T>,
+    vb_index: &mut IndexBuffer,
+    vb_inter: &mut InterBuffer<T>,
 ) -> Result<MeshLoaded, RhError> {
     let scale = file.scale;
     let swizzle = file.swizzle;
@@ -135,18 +135,18 @@ pub fn load<T: InterVertexTrait>(
                 match idx_data {
                     ReadIndices::U8(it) => {
                         for i in it {
-                            vb_base.push_index(u16::from(i));
+                            vb_index.push_index(u16::from(i));
                         }
                     }
                     ReadIndices::U16(it) => {
                         for i in it {
-                            vb_base.push_index(i);
+                            vb_index.push_index(i);
                         }
                     }
                     ReadIndices::U32(it) => {
                         info!("Trying to convert 32 bit indices to 16 bit");
                         for i in it {
-                            vb_base.push_index(
+                            vb_index.push_index(
                                 u16::try_from(i)
                                     .map_err(|_| RhError::IndexTooLarge)?,
                             );
@@ -158,7 +158,7 @@ pub fn load<T: InterVertexTrait>(
                 return Err(RhError::UnsupportedFormat);
             };
 
-            // Read the positions, scale & convert to Z axis up if needed, and store
+            let mut pos = Vec::new();
             if let Some(pos_data) = reader.read_positions() {
                 match pos_data {
                     ReadPositions::Standard(it) => {
@@ -170,7 +170,7 @@ pub fn load<T: InterVertexTrait>(
                                     [i[0] * scale, i[1] * scale, i[2] * scale]
                                 }
                             };
-                            vb_base.push_position(&p);
+                            pos.push(p);
                         }
                     }
                     ReadPositions::Sparse(_) => {
@@ -244,6 +244,7 @@ pub fn load<T: InterVertexTrait>(
                         for (i, norm) in it.enumerate() {
                             vb_inter.push(
                                 &ImportVertex {
+                                    position: pos[i],
                                     normal: if swizzle {
                                         [norm[0], -norm[2], norm[1]]
                                     } else {

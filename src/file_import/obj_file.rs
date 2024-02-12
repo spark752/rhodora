@@ -1,6 +1,6 @@
 use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
 use crate::rh_error::RhError;
-use crate::vertex::{BaseBuffers, InterBuffers, InterVertexTrait};
+use crate::vertex::{IndexBuffer, InterBuffer, InterVertexTrait};
 use log::{info, warn};
 
 /// Load a Wavefront OBJ format object from an .obj file. Loads the file into
@@ -11,11 +11,11 @@ use log::{info, warn};
 /// May return `RhError`
 pub fn load<T: InterVertexTrait>(
     file: &FileToLoad,
-    vb_base: &mut BaseBuffers,
-    vb_inter: &mut InterBuffers<T>,
+    vb_index: &mut IndexBuffer,
+    vb_inter: &mut InterBuffer<T>,
 ) -> Result<MeshLoaded, RhError> {
     let load_result = tobj::load_obj(&file.filename, &tobj::GPU_LOAD_OPTIONS);
-    process_obj(file, load_result, vb_base, vb_inter)
+    process_obj(file, load_result, vb_index, vb_inter)
 }
 
 /// Process loaded Wavefront OBJ format data. Called by `load_obj` or can be
@@ -26,8 +26,8 @@ pub fn load<T: InterVertexTrait>(
 pub fn process_obj<T: InterVertexTrait>(
     file: &FileToLoad,
     load_result: tobj::LoadResult,
-    vb_base: &mut BaseBuffers,
-    vb_inter: &mut InterBuffers<T>,
+    vb_index: &mut IndexBuffer,
+    vb_inter: &mut InterBuffer<T>,
 ) -> Result<MeshLoaded, RhError> {
     let (tobj_models, tobj_materials) = load_result?;
     info!("Found {} Models", tobj_models.len());
@@ -51,28 +51,23 @@ pub fn process_obj<T: InterVertexTrait>(
         let idx_count = mesh.indices.len();
         let has_uv = !mesh.texcoords.is_empty();
 
-        // Convert positions to Z axis up if needed
-        for v in 0..pos_count {
-            let p = if swizzle {
-                [
-                    mesh.positions[v * 3] * scale,
-                    -mesh.positions[v * 3 + 2] * scale,
-                    mesh.positions[v * 3 + 1] * scale,
-                ]
-            } else {
-                [
-                    mesh.positions[v * 3] * scale,
-                    mesh.positions[v * 3 + 1] * scale,
-                    mesh.positions[v * 3 + 2] * scale,
-                ]
-            };
-            vb_base.push_position(&p);
-        }
-
         // Convert normals to Z axis up if needed and interleave. This file
         // format does not support skinning.
         for v in 0..pos_count {
             let bf = ImportVertex {
+                position: if swizzle {
+                    [
+                        mesh.positions[v * 3] * scale,
+                        -mesh.positions[v * 3 + 2] * scale,
+                        mesh.positions[v * 3 + 1] * scale,
+                    ]
+                } else {
+                    [
+                        mesh.positions[v * 3] * scale,
+                        mesh.positions[v * 3 + 1] * scale,
+                        mesh.positions[v * 3 + 2] * scale,
+                    ]
+                },
                 normal: if swizzle {
                     [
                         mesh.normals[v * 3],
@@ -98,7 +93,7 @@ pub fn process_obj<T: InterVertexTrait>(
 
         // Convert to 16 bit indices
         for i in 0..idx_count {
-            vb_base.push_index(
+            vb_index.push_index(
                 u16::try_from(mesh.indices[i])
                     .map_err(|_| RhError::IndexTooLarge)?,
             );

@@ -46,6 +46,7 @@ pub struct MeshLoaded {
 /// Intermediate vertex format for interleaved data
 #[derive(Default)]
 pub struct ImportVertex {
+    pub position: [f32; 3],
     pub normal: [f32; 3],
     pub tex_coord: [f32; 2],
     pub joint_ids: [u8; 4],
