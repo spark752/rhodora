@@ -12,22 +12,75 @@ use gltf::{
         ReadWeights,
     },
     mesh::Mode,
-    Document, Gltf, Semantic,
+    Document, Gltf, Primitive, Semantic,
 };
 use log::{info, trace, warn};
 use std::{fs, io, path::Path};
 
-struct TempJoints {
-    id_array: [u8; 4],
-    weights: [f32; 4],
-}
-
-impl TempJoints {
-    /// Packs joint data for a vertex into the vertex format. Takes ownership
-    /// of arguments.
-    const fn new(id_array: [u8; 4], weights: [f32; 4]) -> Self {
-        Self { id_array, weights }
+// Validate a glTF for compatibility. Returns index and vertex count.
+fn validate(p: &Primitive) -> Result<(usize, usize), RhError> {
+    // Mesh must be made of indexed triangles
+    if p.mode() != Mode::Triangles {
+        return Err(RhError::UnsupportedFormat);
     }
+    let indices = (p.indices().ok_or(RhError::UnsupportedFormat))?;
+    let idx_count = indices.count();
+
+    // Positions are required
+    let positions = (p
+        .get(&Semantic::Positions)
+        .ok_or(RhError::UnsupportedFormat))?;
+    let vert_count = positions.count();
+
+    // Normals are required. There must be the same number of normals as
+    // there are positions.
+    let normals =
+        (p.get(&Semantic::Normals).ok_or(RhError::UnsupportedFormat))?;
+    if normals.count() != vert_count {
+        return Err(RhError::UnsupportedFormat);
+    }
+
+    // Texture coordinate (UVs) are optional, but if they are provided they
+    // must be in Vec2 and the same number as there are positions
+    let uv_option = p.get(&Semantic::TexCoords(0));
+    {
+        if let Some(ref uv) = uv_option {
+            if uv.count() != vert_count || uv.dimensions() != Dimensions::Vec2 {
+                return Err(RhError::UnsupportedFormat);
+            }
+        }
+    }
+
+    // Joint data is optional, but if it is provided there must be both indices
+    // and weights and the same number as there are positions
+    let joint_option = p.get(&Semantic::Joints(0));
+    {
+        if let Some(ref joints) = joint_option {
+            if joints.count() != vert_count {
+                return Err(RhError::UnsupportedFormat);
+            }
+        }
+        let weight_option = p.get(&Semantic::Weights(0));
+        if let Some(weights) = weight_option {
+            if weights.count() != vert_count {
+                return Err(RhError::UnsupportedFormat);
+            }
+        } else {
+            return Err(RhError::UnsupportedFormat);
+        }
+    }
+
+    // A little info
+    info!(
+        "Submesh={}, Index count={}, Vertex count={}, Has UV={}, Has joints={}",
+        p.index(),
+        idx_count,
+        vert_count,
+        uv_option.is_some(),
+        joint_option.is_some(),
+    );
+
+    Ok((idx_count, vert_count))
 }
 
 fn load_impl<P>(path: P) -> Result<(Document, Vec<buffer::Data>), RhError>
@@ -40,10 +93,26 @@ where
     let reader = io::BufReader::new(file);
     let gltf = Gltf::from_reader(reader)
         .map_err(|e| RhError::GltfError(Box::new(e)))?;
-    let buffer_data =
-        gltf::import_buffers(&gltf.document, Some(base), gltf.blob)
-            .map_err(|e| RhError::GltfError(Box::new(e)))?;
-    Ok((gltf.document, buffer_data))
+    let buffers = gltf::import_buffers(&gltf.document, Some(base), gltf.blob)
+        .map_err(|e| RhError::GltfError(Box::new(e)))?;
+
+    // Some info
+    let buffer_count = buffers.len();
+    info!(
+        "{:?}, base path={:?}, buffer count={}, first buffer length={} ",
+        path,
+        base,
+        buffer_count,
+        buffers[0].len(),
+    );
+    if buffer_count != 1 {
+        warn!(
+            "buffer count={} is not 1. This probably won't work",
+            buffer_count
+        );
+    }
+
+    Ok((gltf.document, buffers))
 }
 
 /// Load a glTF file. Only a very limited subset of glTF functionality is
@@ -55,7 +124,7 @@ where
 ///
 /// # Errors
 /// May return `RhError`
-#[allow(clippy::cognitive_complexity)]
+//#[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_lines)]
 pub fn load<T: InterVertexTrait>(
     file: &FileToLoad,
@@ -70,222 +139,147 @@ pub fn load<T: InterVertexTrait>(
 
     // Load the gltf file and mesh data but not the textures
     let (document, buffers) = load_impl(&file.filename)?;
-    info!(
-        "{}, buffer count={}, buffer length={}, scale={}, swizzle={} ",
-        file.filename,
-        buffers.len(),
-        buffers[0].len(),
-        scale,
-        swizzle
-    );
 
     // Can contain multiple meshes which can contain multiple primitives. Each
     // primitive is treated as a submesh to match the .obj format support.
     for m in document.meshes() {
         info!("Mesh={}, Name={:?}", m.index(), m.name());
         for p in m.primitives() {
-            // Mesh must be made of indexed triangles
-            if p.mode() != Mode::Triangles {
-                return Err(RhError::UnsupportedFormat);
-            }
-            let indices = (p.indices().ok_or(RhError::UnsupportedFormat))?;
-            let idx_count = indices.count();
-
-            // Positions are required
-            let positions = (p
-                .get(&Semantic::Positions)
-                .ok_or(RhError::UnsupportedFormat))?;
-            let pos_count = positions.count();
-
-            // Normals are required. There must be the same number of normals as
-            // there are positions.
-            let normals =
-                (p.get(&Semantic::Normals).ok_or(RhError::UnsupportedFormat))?;
-            if normals.count() != pos_count {
-                return Err(RhError::UnsupportedFormat);
-            }
-
-            // Texture coordinate (UVs) are optional, but if they are provided
-            // there must be the same number as there are positions as Vec2
-            let uv_option = p.get(&Semantic::TexCoords(0));
-            {
-                if let Some(ref uv) = uv_option {
-                    if uv.count() != pos_count
-                        || uv.dimensions() != Dimensions::Vec2
-                    {
-                        return Err(RhError::UnsupportedFormat);
-                    }
-                }
-            }
-
-            // A little info
-            info!(
-                "Submesh={}, Index count={}, Vertex count={}, Has UV={}",
-                p.index(),
-                idx_count,
-                pos_count,
-                uv_option.is_some()
-            );
+            // Validate certain aspects of the glTF. These should include that
+            // the number of positions is equal to the number of normals etc.
+            // since we don't know how to interpret the data if they aren't
+            // equal.
+            let (idx_count, vert_count) = validate(&p)?;
 
             // Create a reader for the data buffer
             let reader = p.reader(|_| Some(&buffers[0]));
 
-            // Read the indices and store them as 16 bits
-            if let Some(idx_data) = reader.read_indices() {
-                match idx_data {
-                    ReadIndices::U8(it) => {
-                        for i in it {
-                            vb_index.push_index(u16::from(i));
-                        }
-                    }
-                    ReadIndices::U16(it) => {
-                        for i in it {
-                            vb_index.push_index(i);
-                        }
-                    }
-                    ReadIndices::U32(it) => {
-                        info!("Trying to convert 32 bit indices to 16 bit");
-                        for i in it {
-                            vb_index.push_index(
-                                u16::try_from(i)
-                                    .map_err(|_| RhError::IndexTooLarge)?,
-                            );
-                        }
+            // Read the indices and store them as 16 bits directly to the
+            // output buffer
+            let idx_data =
+                reader.read_indices().ok_or(RhError::UnsupportedFormat)?;
+            match idx_data {
+                ReadIndices::U8(it) => {
+                    for i in it {
+                        vb_index.push_index(u16::from(i));
                     }
                 }
-            } else {
-                warn!("Missing mesh indices");
-                return Err(RhError::UnsupportedFormat);
-            };
-
-            let mut pos = Vec::new();
-            if let Some(pos_data) = reader.read_positions() {
-                match pos_data {
-                    ReadPositions::Standard(it) => {
-                        for i in it {
-                            let p = {
-                                if swizzle {
-                                    [i[0] * scale, -i[2] * scale, i[1] * scale]
-                                } else {
-                                    [i[0] * scale, i[1] * scale, i[2] * scale]
-                                }
-                            };
-                            pos.push(p);
-                        }
-                    }
-                    ReadPositions::Sparse(_) => {
-                        warn!("Unsupported sparse format");
-                        return Err(RhError::UnsupportedFormat);
+                ReadIndices::U16(it) => {
+                    for i in it {
+                        vb_index.push_index(i);
                     }
                 }
-            } else {
-                warn!("Missing mesh positions");
-                return Err(RhError::UnsupportedFormat);
+                ReadIndices::U32(it) => {
+                    info!("Trying to convert 32 bit indices to 16 bit");
+                    for i in it {
+                        vb_index.push_index(
+                            u16::try_from(i)
+                                .map_err(|_| RhError::IndexTooLarge)?,
+                        );
+                    }
+                }
             }
 
-            // Read the texture coordinates if they exist and store them in a
-            // temporary buffer so that they can be interleaved with normals
-            let mut uv = Vec::new();
-            if let Some(uv_data) = reader.read_tex_coords(0) {
-                if let ReadTexCoords::F32(it) = uv_data {
-                    for i in it {
-                        uv.push(i);
+            // Create an import vertex buffer to build up the other data
+            let mut verts = Vec::new();
+
+            // Read and store positions into the import vertex buffer, scaling
+            // and swizzling if needed
+            let pos_data =
+                reader.read_positions().ok_or(RhError::UnsupportedFormat)?;
+            let ReadPositions::Standard(it) = pos_data else {
+                warn!("Unsupported sparse position format");
+                return Err(RhError::UnsupportedFormat);
+            };
+            for i in it {
+                let p = {
+                    if swizzle {
+                        [i[0] * scale, -i[2] * scale, i[1] * scale]
+                    } else {
+                        [i[0] * scale, i[1] * scale, i[2] * scale]
                     }
-                } else {
+                };
+                let v = ImportVertex {
+                    position: p,
+                    ..Default::default()
+                };
+                verts.push(v);
+            }
+
+            // Read and store normals into the import vertex buffer, swizzling
+            // if needed
+            let norm_data =
+                reader.read_normals().ok_or(RhError::UnsupportedFormat)?;
+            let ReadNormals::Standard(it) = norm_data else {
+                warn!("Unsupported sparse normal format");
+                return Err(RhError::UnsupportedFormat);
+            };
+            for (i, norm) in it.enumerate() {
+                if i < verts.len() {
+                    verts[i].normal = {
+                        if swizzle {
+                            [norm[0], -norm[2], norm[1]]
+                        } else {
+                            [norm[0], norm[1], norm[2]]
+                        }
+                    };
+                }
+            }
+
+            // Read and store the texture coordinates if they exist
+            if let Some(uv_data) = reader.read_tex_coords(0) {
+                let ReadTexCoords::F32(it) = uv_data else {
                     // Could support these if we come up with a test case
                     warn!("Unsupported UV format");
                     return Err(RhError::UnsupportedFormat);
-                }
-            }
-
-            // Read the joints if they exist and store them in a temporary
-            // buffer so they can be interleaved with normals
-            let mut temp_joints = Vec::new();
-            if let Some(d) = reader.read_joints(0) {
-                match d {
-                    ReadJoints::U8(jit) => {
-                        if let Some(d) = reader.read_weights(0) {
-                            if let ReadWeights::F32(wit) = d {
-                                for (id_array, weights) in jit.zip(wit) {
-                                    trace!(
-                                        "Joint ids={:?} weights={:?}",
-                                        id_array,
-                                        weights
-                                    );
-                                    temp_joints.push(TempJoints::new(
-                                        id_array, weights,
-                                    ));
-                                }
-                            } else {
-                                // We could try to support these in the
-                                // future if we come up with a test case
-                                warn!("Unsupported weight format");
-                                return Err(RhError::UnsupportedFormat);
-                            }
-                        } else {
-                            warn!("Missing joint weights");
-                            return Err(RhError::UnsupportedFormat);
-                        }
-                    }
-                    ReadJoints::U16(_) => {
-                        // We could try to support these in the future
-                        // if we come up with a test case
-                        warn!("Unsupported joint format");
-                        return Err(RhError::UnsupportedFormat);
+                };
+                for (i, uv) in it.enumerate() {
+                    if i < verts.len() {
+                        verts[i].tex_coord = uv;
                     }
                 }
             }
 
-            // Read the normals, convert to Z axis up if needed, and store along
-            // with texture coordinates etc. in an interleaved buffer
-            if let Some(norm_data) = reader.read_normals() {
-                match norm_data {
-                    ReadNormals::Standard(it) => {
-                        for (i, norm) in it.enumerate() {
-                            vb_inter.push(
-                                &ImportVertex {
-                                    position: pos[i],
-                                    normal: if swizzle {
-                                        [norm[0], -norm[2], norm[1]]
-                                    } else {
-                                        [norm[0], norm[1], norm[2]]
-                                    },
-                                    tex_coord: {
-                                        if i < uv.len() {
-                                            uv[i]
-                                        } else {
-                                            [0.0, 0.0]
-                                        }
-                                    },
-                                    joint_ids: {
-                                        if i < temp_joints.len() {
-                                            temp_joints[i].id_array
-                                        } else {
-                                            [0, 0, 0, 0]
-                                        }
-                                    },
-                                    weights: {
-                                        if i < temp_joints.len() {
-                                            temp_joints[i].weights
-                                        } else {
-                                            [0.0, 0.0, 0.0, 0.0]
-                                        }
-                                    },
-                                }
-                                .into(),
-                            );
-                        }
-                    }
-                    ReadNormals::Sparse(_) => {
-                        return Err(RhError::UnsupportedFormat);
+            // Read the store the joints if they exist
+            if let Some(joint_data) = reader.read_joints(0) {
+                let ReadJoints::U8(joint_it) = joint_data else {
+                    warn!("Unsupported joint format");
+                    return Err(RhError::UnsupportedFormat);
+                };
+                let weight_data =
+                    reader.read_weights(0).ok_or(RhError::UnsupportedFormat)?;
+                let ReadWeights::F32(weight_it) = weight_data else {
+                    warn!("Unsupported weight format");
+                    return Err(RhError::UnsupportedFormat);
+                };
+                for (i, (id_array, weights)) in
+                    joint_it.zip(weight_it).enumerate()
+                {
+                    trace!("Joint ids={:?} weights={:?}", id_array, weights);
+                    if i < verts.len() {
+                        verts[i].joint_ids = id_array;
+                        verts[i].weights = weights;
                     }
                 }
-            } else {
+            }
+
+            // Validate that we have the expected amount of information
+            if vert_count != verts.len() {
+                warn!(
+                    "Vertex count mismatch {} != {}",
+                    vert_count,
+                    verts.len()
+                );
                 return Err(RhError::UnsupportedFormat);
             }
 
+            // Push the import vertex data into the output buffer
+            for v in verts {
+                vb_inter.push(&v.into());
+            }
+
             // Collect information
-            let vertex_count = i32::try_from(pos_count)
+            let vertex_count = i32::try_from(vert_count)
                 .map_err(|_| RhError::VertexCountTooLarge)?;
             let index_count = u32::try_from(idx_count)
                 .map_err(|_| RhError::IndexCountTooLarge)?;

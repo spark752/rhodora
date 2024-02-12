@@ -106,7 +106,7 @@ impl fmt::Display for RhError {
                 write!(f, "depth format is not supported")
             }
             Self::UnsupportedColourFormat => {
-                write!(f, "colopur format is not supported")
+                write!(f, "colour format is not supported")
             }
             Self::UnsupportedSwapchainFormat => {
                 write!(f, "swapchain format is not supported")
