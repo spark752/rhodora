@@ -25,26 +25,6 @@ use vulkano::{
 use winit::event::Event;
 use winit::window::Window;
 
-/// # Panics
-/// Panics and should be fixed so that it won't
-fn get_surface_image_format(
-    surface: &Arc<Surface>,
-    preferred_format: Option<Format>,
-    gfx_queue: &Arc<Queue>,
-) -> vulkano::format::Format {
-    preferred_format.unwrap_or_else(|| {
-        gfx_queue
-            .device()
-            .physical_device()
-            .surface_formats(surface, SurfaceInfo::default())
-            .unwrap()
-            .iter()
-            .find(|f| f.0.type_color().unwrap() == NumericType::SRGB)
-            .unwrap()
-            .0
-    })
-}
-
 pub struct GuiConfig {
     /// Preferred target image format. This should match the surface format.
     /// Sometimes the user may prefer linear colour space. sRGB is selected
@@ -74,6 +54,8 @@ pub struct Gui {
 }
 
 impl Gui {
+    /// Creates a new GUI handler
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn new<T>(
@@ -83,11 +65,20 @@ impl Gui {
         config: &GuiConfig,
     ) -> Result<Self, RhError> {
         // Pick preferred format if provided, otherwise use the default one
-        let format = get_surface_image_format(
-            &surface,
-            config.preferred_format,
-            &gfx_queue,
-        );
+        let format = {
+            if let Some(f) = config.preferred_format {
+                f
+            } else {
+                gfx_queue
+                    .device()
+                    .physical_device()
+                    .surface_formats(&surface, SurfaceInfo::default())?
+                    .iter()
+                    .find(|f| f.0.type_color() == Some(NumericType::SRGB))
+                    .ok_or(RhError::UnsupportedColourFormat)?
+                    .0
+            }
+        };
         let max_texture_side = gfx_queue
             .device()
             .physical_device()

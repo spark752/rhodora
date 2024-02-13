@@ -1,7 +1,7 @@
 use crate::{
-    file_import::{Batch, FileToLoad},
+    file_import::{Batch, DeviceVertexBuffers, FileToLoad},
     memory::Memory,
-    model_manager::Manager as ModelManager,
+    model_manager::{DvbWrapper, Manager as ModelManager},
     pbr_lights::PbrLightTrait,
     postprocess::PostProcess,
     rh_error::RhError,
@@ -11,7 +11,7 @@ use crate::{
         RenderFormat, SwapchainView, TransferFuture,
     },
     util,
-    vertex::SkinnedFormat,
+    vertex::{InterVertexTrait, SkinnedFormat},
     vk_window::{Properties, VkWindow},
 };
 use log::{error, info};
@@ -28,7 +28,9 @@ use vulkano::{
     format::Format,
     image::view::ImageView,
     image::{SampleCount, SwapchainImage},
-    pipeline::graphics::viewport::Viewport,
+    pipeline::graphics::{
+        vertex_input::Vertex as VertexTrait, viewport::Viewport,
+    },
     render_pass::{LoadOp, StoreOp},
     swapchain::{
         AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
@@ -232,6 +234,7 @@ impl Boss {
         let model_manager = ModelManager::new(
             window.device().clone(),
             memory.memory_allocator.clone(),
+            memory.set_allocator.clone(),
             &render_format,
         )?;
 
@@ -311,6 +314,8 @@ impl Boss {
         Ok(())
     }
 
+    /// Creates a primary command buffer
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn create_primary_cbb(
@@ -369,6 +374,7 @@ impl Boss {
         Ok((image_index, acquire_future)) //.boxed()))
     }
 
+    #[must_use]
     pub fn attachment_info(
         &self,
         background: &[f32; 4],
@@ -401,9 +407,12 @@ impl Boss {
         self.postprocess.draw(cbb)
     }
 
+    /// Renders the main pass with all models to the given camera. Call after
+    /// `render_start`.
+    ///
     /// # Errors
     /// May return `RhError`
-    pub fn render_pass_main<T>(
+    pub fn render_main_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
         background: &[f32; 4],
@@ -411,7 +420,7 @@ impl Boss {
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
         let attachment_info = self.attachment_info(background);
-        if let Err(e) = cbb.begin_rendering(RenderingInfo {
+        cbb.begin_rendering(RenderingInfo {
             color_attachments: vec![Some(attachment_info)],
             depth_attachment: Some(RenderingAttachmentInfo {
                 load_op: LoadOp::Clear,
@@ -422,21 +431,15 @@ impl Boss {
                 )
             }),
             ..Default::default()
-        }) {
-            error!("Error in begin_rendering: {e:?}");
-            return Err(RhError::PipelineError);
-        };
+        })?;
         cbb.set_viewport(0, [self.viewport.clone()]);
-        if let Err(e) = self.model_manager.start_pass(
+        self.model_manager.draw_all(
             cbb,
             &self.memory.set_allocator,
             camera,
             lights,
-        ) {
-            error!("Error in pipeline start_pass: {e:?}");
-            return Err(RhError::PipelineError);
-        };
-        Ok(())
+        )?;
+        self.render_pass_end(cbb)
     }
 
     /// # Errors
@@ -445,14 +448,21 @@ impl Boss {
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<(), RhError> {
-        cbb.end_rendering()?;
+        cbb.end_rendering()?; // let RhError handle error mapping
         Ok(())
     }
 
+    #[must_use]
     pub const fn render_format(&self) -> RenderFormat {
         self.render_format
     }
 
+    /// Starts a rendering frame by checking window and swapchain condition
+    /// and cleaning up old resources. Call this at the start of the frame
+    /// and check the return value. On `Action::Return` don't do any further
+    /// rendering. On `Action::Resize` handle the resized window and proceed
+    /// with rendering. On `Action::Continue` proceed with rendering.
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn render_start(&mut self) -> Result<Action, RhError> {
@@ -579,48 +589,46 @@ impl Boss {
     /// postprocess pass, submit the command buffer, and present the swapchain.
     /// Call `render start` first, followed by any updates needed to model
     /// positions etc. Then call this method. If you need additional passes
-    /// for GUI etc. then you will need to perform the steps indivually instead
-    /// of using this.
+    /// for GUI etc. then you will need to perform the steps individually
+    /// instead of using this.
+    ///
+    /// # Errors
+    /// Will return `RhError` if an error occurs
     ///
     /// # Panics
-    /// Panics if a swapchain image can not be acquired
+    /// Panics if a swapchain image or its future can not be acquired
     pub fn render_all(
         &mut self,
         background: &[f32; 4],
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
-    ) {
+    ) -> Result<(), RhError> {
         // Acquire an image from the swapchain to draw. Returns a
         // future that indicates when the image will be available and
         // may block until it knows that.
         let (image_index, acquire_future) = match self.acquire_next_image() {
             Ok(r) => r,
-            Err(RhError::SwapchainOutOfDate) => return,
+            Err(RhError::SwapchainOutOfDate) => return Ok(()),
             Err(e) => panic!("Could not acquire next image: {e:?}"),
         };
 
         // Create command buffer. For dynamic rendering, begin_rendering
         // and end_rendering are used instead of begin_render_pass and
         // end_render_pass.
-        let mut cbb = self.create_primary_cbb().unwrap();
+        let mut cbb = self.create_primary_cbb()?;
 
         // First pass into postprocess input texture via MSAA if enabled
-        self.render_pass_main(&mut cbb, background, camera, lights)
-            .unwrap();
-
-        // Draw model
-        self.draw_models(&mut cbb, camera).unwrap();
-        self.render_pass_end(&mut cbb).unwrap();
+        self.render_main_pass(&mut cbb, background, camera, lights)?;
 
         // Second pass postprocess to swapchain image
-        self.render_pass_postprocess(&mut cbb, image_index).unwrap();
-        self.render_pass_end(&mut cbb).unwrap();
+        self.render_pass_postprocess(&mut cbb, image_index)?;
+        self.render_pass_end(&mut cbb)?;
 
         // Wait for swapchain image first. This avoids stutters and 100%
-        // CPU usage on Linux + NVIDIA when vsync is on. However it is
-        // only possible with a patch for Vulkano issue #2080 which has
-        // not yet been released. It is in a local version.
-        acquire_future.wait(None).unwrap();
+        // CPU usage on Linux + NVIDIA when vsync is on.
+        acquire_future
+            .wait(None)
+            .expect("Fence error while waiting for swapchain image");
 
         // Submit command buffer & present swapchain once ready
         self.submit_and_present(
@@ -629,18 +637,6 @@ impl Boss {
             Box::new(acquire_future),
             image_index,
         )
-        .unwrap();
-    }
-
-    pub fn device_access<'a, T>(
-        &'a self,
-        cbb: &'a mut AutoCommandBufferBuilder<T>,
-    ) -> DeviceAccess<'a, T> {
-        DeviceAccess {
-            device: self.window.device().clone(),
-            set_allocator: &self.memory.set_allocator,
-            cbb,
-        }
     }
 
     /// Convenience function that creates a batch, loads a single mesh into
@@ -658,14 +654,12 @@ impl Boss {
         cbb: &mut AutoCommandBufferBuilder<T>,
         file: &FileToLoad,
     ) -> Result<usize, RhError> {
-        self.model_manager.load(
-            &mut DeviceAccess {
-                device: self.window.device().clone(),
-                set_allocator: &self.memory.set_allocator,
-                cbb,
-            },
-            file,
-        )
+        // Vertex format was once hard coded in lowest levels but now has made
+        // it all the way up to here. Still some more to go.
+        let mut batch = Batch::<SkinnedFormat>::new();
+        batch.load(file)?;
+        let ret = self.model_manager.load_batch(cbb, batch)?;
+        Ok(ret[0])
     }
 
     /// Convenience function that creates a batch, loads a single mesh into
@@ -686,32 +680,20 @@ impl Boss {
         self.load_mesh(cbb, file)
     }
 
+    /// Loads a batch of meshes
+    ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch<T>(
+    pub fn load_batch<T, U>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: Batch<SkinnedFormat>,
-    ) -> Result<Vec<usize>, RhError> {
-        self.model_manager.load_batch(
-            &mut DeviceAccess {
-                device: self.window.device().clone(),
-                set_allocator: &self.memory.set_allocator,
-                cbb,
-            },
-            batch,
-        )
-    }
-
-    /// # Errors
-    /// May return `RhError`
-    pub fn draw_models<T>(
-        &self,
-        cbb: &mut AutoCommandBufferBuilder<T>,
-        camera: &impl CameraTrait,
-    ) -> Result<(), RhError> {
-        self.model_manager
-            .draw_all(cbb, &self.memory.set_allocator, camera)
+        batch: Batch<U>,
+    ) -> Result<Vec<usize>, RhError>
+    where
+        U: VertexTrait + InterVertexTrait,
+        DvbWrapper: From<DeviceVertexBuffers<U>>,
+    {
+        self.model_manager.load_batch(cbb, batch)
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -835,6 +817,7 @@ impl Boss {
         None
     }
 
+    #[must_use]
     pub const fn graphics_queue(&self) -> &Arc<Queue> {
         self.window.graphics_queue()
     }
@@ -848,20 +831,26 @@ impl Boss {
         util::start_transfer(cbb, self.graphics_queue().clone())
     }
 
+    #[must_use]
     pub const fn device(&self) -> &Arc<Device> {
         self.window.device()
     }
 
+    /// Gets access to the `TextureManager` owned by the `ModelManager` which
+    /// is owned by this object
+    #[must_use]
     pub const fn texture_manager(&self) -> &Arc<TextureManager> {
         self.model_manager.texture_manager()
     }
 
     /// Get a boxed "now" future compatible with the device
+    #[must_use]
     pub fn now_future(&self) -> Box<dyn GpuFuture> {
         vulkano::sync::now(self.window.device().clone()).boxed()
     }
 
     /// Elapsed time since `start_loop`
+    #[must_use]
     pub fn elapsed(&self) -> Option<Duration> {
         self.loop_start.map(|loop_start| loop_start.elapsed())
     }

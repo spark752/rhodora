@@ -63,7 +63,7 @@ impl PbrPipeline {
         let vert_shader = vs::load(device.clone())?;
         let frag_shader = pbr_fs::load(device.clone())?;
         //let frag_shader = viz_fs::load(device.clone())?; // TEST
-        let pipeline =
+        let graphics =
             GraphicsPipeline::start()
                 .render_pass(PipelineRenderingCreateInfo {
                     color_attachment_formats: vec![Some(
@@ -123,7 +123,7 @@ impl PbrPipeline {
             },
         );
         Ok(Self {
-            graphics: pipeline,
+            graphics,
             sampler,
             vpl_pool,
             m_pool,
@@ -139,7 +139,7 @@ impl PbrPipeline {
     pub fn start_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        descriptor_set_allocator: &StandardDescriptorSetAllocator,
+        desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
@@ -157,7 +157,7 @@ impl PbrPipeline {
             buffer
         };
         let desc_set = PersistentDescriptorSet::new(
-            descriptor_set_allocator,
+            desc_set_allocator,
             util::get_layout(&self.graphics, VPL_SET as usize)?.clone(),
             [WriteDescriptorSet::buffer(VPL_BINDING, vpl_buffer)],
         )?;

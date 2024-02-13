@@ -7,18 +7,16 @@ use super::{
     pipeline::Pipeline,
 };
 use crate::{
-    file_import::{
-        Batch, DeviceVertexBuffers, FileToLoad, Material, MeshLoaded,
-    },
+    file_import::{Batch, DeviceVertexBuffers, Material, MeshLoaded},
     pbr_lights::PbrLightTrait,
     pbr_pipeline::{PbrPipeline, PushConstantData, UniformM},
     rh_error::RhError,
     texture::Manager as TextureManager,
-    types::{CameraTrait, DeviceAccess, RenderFormat},
+    types::{CameraTrait, RenderFormat},
     util,
-    vertex::{InterVertexTrait, SkinnedFormat},
+    vertex::InterVertexTrait,
 };
-use log::info;
+use log::{error, info};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
@@ -30,8 +28,7 @@ use vulkano::{
     device::Device,
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
-        graphics::vertex_input::Vertex as VertexTrait, GraphicsPipeline,
-        PipelineBindPoint,
+        graphics::vertex_input::Vertex as VertexTrait, PipelineBindPoint,
     },
 };
 
@@ -48,49 +45,38 @@ pub struct Manager {
     texture_manager: Arc<TextureManager>,
     device: Arc<Device>,
     mem_allocator: Arc<StandardMemoryAllocator>,
+    set_allocator: Arc<StandardDescriptorSetAllocator>,
     render_format: RenderFormat,
 }
 
 impl Manager {
+    /// Creates a `ModelManager`
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn new(
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
+        set_allocator: Arc<StandardDescriptorSetAllocator>,
         render_format: &RenderFormat,
     ) -> Result<Self, RhError> {
-        // FIXME: Do this on demand now that we have the stuff saved to do so
-        let pbr_pipeline = PbrPipeline::new::<SkinnedFormat>(
-            device.clone(),
-            mem_allocator.clone(),
-            render_format,
-        )?;
-        let pp = vec![Pipeline {
-            pipeline: pbr_pipeline,
-        }];
-
         let texture_manager =
             Arc::new(TextureManager::new(mem_allocator.clone()));
         Ok(Self {
             models: Vec::new(),
-            pipelines: pp,
+            pipelines: Vec::new(),
             dvbs: Vec::new(),
             materials: Vec::new(),
             texture_manager,
             device,
             mem_allocator,
+            set_allocator,
             render_format: *render_format,
         })
     }
 
-    fn pipeline_data(&self, index: usize) -> &PbrPipeline {
-        &self.pipelines[index].pipeline
-    }
-
-    fn pipeline_graphics(&self, index: usize) -> &Arc<GraphicsPipeline> {
-        &self.pipelines[index].pipeline.graphics
-    }
-
+    /// Access the `TextureManager` owned by this `ModelManager`
+    ///
     /// # Errors
     /// May return `RhError`
     #[must_use]
@@ -98,23 +84,23 @@ impl Manager {
         &self.texture_manager
     }
 
-    // FIXME
-    #[allow(dead_code)]
-    fn create_pipeline(&self) -> Result<PbrPipeline, RhError> {
-        PbrPipeline::new::<SkinnedFormat>(
+    fn create_pipeline<T: VertexTrait>(&self) -> Result<PbrPipeline, RhError> {
+        PbrPipeline::new::<T>(
             self.device.clone(),
             self.mem_allocator.clone(),
             &self.render_format,
         )
     }
 
-    /// Helper function generic for vertex formats provided the associated
-    /// `DeviceVertexBuffer` can be `.into()` the DVB enum. That should be
-    /// all Rhodora interleaved formats but the conditions were a bit tricky
-    /// to write.
+    // Helper function generic for vertex formats provided the associated
+    // `DeviceVertexBuffer` can be `.into()` the DVB enum. That should be
+    // all Rhodora interleaved formats but the conditions were a bit tricky
+    // to write. Then they have to propogate up to all the pub functions.
+    // Additionally the command buffer builder could be primary or secondary
+    // in theory, but secondary has probably never been tested.
     fn load_batch_impl<T, U>(
         &mut self,
-        device_access: &mut DeviceAccess<T>,
+        cbb: &mut AutoCommandBufferBuilder<T>,
         batch: Batch<U>,                   // Not a reference
         tex_opt: Option<Vec<TexMaterial>>, // Not a reference
     ) -> Result<Vec<usize>, RhError>
@@ -122,7 +108,14 @@ impl Manager {
         U: VertexTrait + InterVertexTrait,
         DvbWrapper: From<DeviceVertexBuffers<U>>,
     {
-        let pipeline_index = 0; // FIXME
+        // Look for an existing pipeline with the right configuration. If none
+        // exists, create one.
+        // FIXME: What does that mean? How do we do it?
+        let pp_index = self.pipelines.len();
+        if pp_index == 0 {
+            let pp = self.create_pipeline::<U>()?;
+            self.pipelines.push(Pipeline { pipeline: pp });
+        }
 
         // Successful return will be a vector of the mesh indices
         let mut ret = Vec::new();
@@ -130,7 +123,7 @@ impl Manager {
         // Create and store the shared DeviceVertexBuffer
         let dvb_index = self.dvbs.len();
         let dvb = DeviceVertexBuffers::<U>::new(
-            device_access.cbb,
+            cbb,
             self.mem_allocator.clone(),
             batch.vb_index,
             batch.vb_inter,
@@ -144,7 +137,7 @@ impl Manager {
             ret.push(self.models.len());
             self.models.push(Model {
                 mesh,
-                pipeline_index,
+                pipeline_index: pp_index,
                 dvb_index,
                 material_offset,
                 visible: false, // To prevent model from popping up at origin
@@ -158,22 +151,20 @@ impl Manager {
             if let Some(tex) = tex_opt {
                 tex
             } else {
-                self.load_batch_materials(&batch.meshes, device_access.cbb)?
+                self.load_batch_materials(&batch.meshes, cbb)?
             }
         };
 
         // Process the materials, creating descriptors
-        // Calling `pipeline_arc` returns a reference to an Arc. Feeding this
-        // directly to `get_layout` causes this borrow to live as long as
-        // `layout` which prevents the mutable borrow of `materials`. Cloning
-        // the Arc shouldn't be necessary but ends the borrow and makes it work.
-        let arc = self.pipeline_graphics(pipeline_index).clone(); // unborrowing
-        let layout = util::get_layout(&arc, TEX_SET as usize)?;
+        let layout = util::get_layout(
+            &self.pipelines[pp_index].pipeline.graphics,
+            TEX_SET as usize,
+        )?;
         for m in tex_materials {
             self.materials.push(material::tex_to_pbr(
                 &m,
-                device_access.set_allocator,
-                &self.pipeline_data(pipeline_index).sampler,
+                &self.set_allocator,
+                &self.pipelines[pp_index].pipeline.sampler,
                 layout,
             )?);
         }
@@ -185,23 +176,16 @@ impl Manager {
     ///
     /// # Errors
     /// May return `RhError`
-    //
-    // Clippy doesn't like U being restricted by the private trait:
-    // "Having private types or traits in item bounds makes it less clear what
-    // interface the item actually provides."
-    // But the restriction is needed and `DvbWrapper` not ready to be public
-    // yet.
-    #[allow(private_bounds)]
     pub fn load_batch<T, U>(
         &mut self,
-        device_access: &mut DeviceAccess<T>,
+        cbb: &mut AutoCommandBufferBuilder<T>,
         batch: Batch<U>, // Not a reference
     ) -> Result<Vec<usize>, RhError>
     where
         U: VertexTrait + InterVertexTrait,
         DvbWrapper: From<DeviceVertexBuffers<U>>,
     {
-        self.load_batch_impl(device_access, batch, None)
+        self.load_batch_impl(cbb, batch, None)
     }
 
     /// Load a batch of meshes with provided materials. Useful if you have
@@ -210,13 +194,17 @@ impl Manager {
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch_meshes<T>(
+    pub fn load_batch_meshes<T, U>(
         &mut self,
-        device_access: &mut DeviceAccess<T>,
-        batch: Batch<SkinnedFormat>, // Not a reference
+        cbb: &mut AutoCommandBufferBuilder<T>,
+        batch: Batch<U>,                 // Not a reference
         tex_materials: Vec<TexMaterial>, // Not a reference
-    ) -> Result<Vec<usize>, RhError> {
-        self.load_batch_impl(device_access, batch, Some(tex_materials))
+    ) -> Result<Vec<usize>, RhError>
+    where
+        U: VertexTrait + InterVertexTrait,
+        DvbWrapper: From<DeviceVertexBuffers<U>>,
+    {
+        self.load_batch_impl(cbb, batch, Some(tex_materials))
     }
 
     fn load_material<T>(
@@ -252,25 +240,6 @@ impl Manager {
         Ok(tex_materials)
     }
 
-    /// Convenience function to load a single .obj file as a batch. Creates
-    /// the batch, loads a single file to it, then processes it by calling
-    /// `load_batch`.
-    ///
-    /// # Errors
-    /// May return `RhError`
-    pub fn load<T>(
-        &mut self,
-        device_access: &mut DeviceAccess<T>,
-        file: &FileToLoad,
-    ) -> Result<usize, RhError> {
-        // Vertex format was once hard coded in lowest levels but now has made
-        // it all the way up to here. Still some more to go.
-        let mut batch = Batch::<SkinnedFormat>::new();
-        batch.load(file)?;
-        let ret = self.load_batch(device_access, batch)?;
-        Ok(ret[0])
-    }
-
     pub fn update(
         &mut self,
         index: usize,
@@ -292,31 +261,17 @@ impl Manager {
 
     /// # Errors
     /// May return `RhError`
-    pub fn draw_all<T>(
-        &self,
-        cbb: &mut AutoCommandBufferBuilder<T>,
-        descriptor_set_allocator: &StandardDescriptorSetAllocator,
-        camera: &impl CameraTrait,
-    ) -> Result<(), RhError> {
-        for index in 0..self.models.len() {
-            self.draw(index, cbb, descriptor_set_allocator, camera)?;
-        }
-        Ok(())
-    }
-
-    /// # Errors
-    /// May return `RhError`
     pub fn draw<T>(
         &self,
         index: usize,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        descriptor_set_allocator: &StandardDescriptorSetAllocator,
+        desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
         if !self.models[index].visible {
             return Ok(());
         }
-        let pipeline_index = self.models[index].pipeline_index;
+        let pp_index = self.models[index].pipeline_index;
 
         // Uniform buffer for model matrix and texture is in descriptor set 1
         // since this will change for each model and updating a descriptor set
@@ -337,15 +292,15 @@ impl Manager {
                 joints: self.models[index].joints.into(),
             };
             let buffer =
-                self.pipeline_data(pipeline_index).m_pool.allocate_sized()?;
+                self.pipelines[pp_index].pipeline.m_pool.allocate_sized()?;
             *buffer.write()? = data;
             buffer
         };
         let desc_set = PersistentDescriptorSet::new(
             // Set 1
-            descriptor_set_allocator,
+            desc_set_allocator,
             util::get_layout(
-                self.pipeline_graphics(pipeline_index),
+                &self.pipelines[pp_index].pipeline.graphics,
                 M_SET as usize,
             )?
             .clone(),
@@ -355,7 +310,7 @@ impl Manager {
         // CommandBufferBuilder should have a render pass started
         cbb.bind_descriptor_sets(
             PipelineBindPoint::Graphics,
-            self.pipeline_data(pipeline_index).layout().clone(),
+            self.pipelines[pp_index].pipeline.layout().clone(),
             M_SET, // starting set, higher values also changed
             desc_set,
         );
@@ -379,7 +334,7 @@ impl Manager {
             DvbWrapper::Rigid(dvb) => {
                 bind_dvbs(cbb, dvb);
             } // Adding more vertex formats will requre more duplicate code here
-              // but the build will fail to tell us that.
+              // but that will cause the build to fail so we will know that.
         }
 
         // All of the submeshes are in the buffers and share a model matrix
@@ -404,12 +359,12 @@ impl Manager {
                 };
                 cbb.bind_descriptor_sets(
                     PipelineBindPoint::Graphics,
-                    self.pipeline_data(0).layout().clone(),
+                    self.pipelines[pp_index].pipeline.layout().clone(),
                     TEX_SET,
                     material.texture_set.clone(),
                 )
                 .push_constants(
-                    self.pipeline_data(0).layout().clone(),
+                    self.pipelines[pp_index].pipeline.layout().clone(),
                     0,              // offset (must be multiple of 4)
                     push_constants, // (size must be multiple of 4)
                 );
@@ -426,22 +381,46 @@ impl Manager {
         Ok(())
     }
 
-    /// Start a rendering pass using the owned PBR pipeline.
+    /// Renders all the models. Provide a command buffer which has had
+    /// `begin_rendering` and `set_viewport` called on it.
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn start_pass<T>(
+    pub fn draw_all<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        descriptor_set_allocator: &StandardDescriptorSetAllocator,
+        desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
-        self.pipeline_data(0).start_pass(
-            cbb,
-            descriptor_set_allocator,
-            camera,
-            lights,
-        )
+        let mut bound_ppi: Option<usize> = None; // Index of bound pipeline
+
+        for model_index in 0..self.models.len() {
+            // Check if we need to bind a new pipeline for this model
+            let ppi = self.models[model_index].pipeline_index;
+            let need_bind = bound_ppi.map_or(true, |i| i != ppi);
+            if need_bind {
+                // Bind pipeline
+                if ppi < self.pipelines.len() {
+                    self.pipelines[ppi].pipeline.start_pass(
+                        cbb,
+                        desc_set_allocator,
+                        camera,
+                        lights,
+                    )?;
+                    bound_ppi = Some(ppi);
+                } else {
+                    error!(
+                        "Model {} contains invalid pipeline_index {}",
+                        model_index, ppi
+                    );
+                    return Err(RhError::PipelineError);
+                }
+            }
+
+            // Draw
+            self.draw(model_index, cbb, desc_set_allocator, camera)?;
+        }
+        Ok(())
     }
 }
