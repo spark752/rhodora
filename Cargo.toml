@@ -11,16 +11,14 @@ repository = "https://github.com/spark752/rhodora"
 [profile.dev]
 opt-level = 1
 
-[lints.rust]
-# vulkano shader stuff flagged as unsafe_code so can't enable this
-#unsafe_code = "forbid"
-
 [lints.clippy]
-# Consider these for future use
 enum_glob_use = "deny"
 pedantic = "deny"
 nursery = "deny"
 unwrap_used = "deny"
+string_to_string = "deny"
+panic = "deny"
+#expect_used = "deny"
 
 [dependencies]
 vulkano = { version = "0.33.0" }

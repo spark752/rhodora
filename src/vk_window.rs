@@ -73,6 +73,9 @@ impl VkWindow {
             },
         )?;
         let _debug_callback =
+            // Interface for Vulkan validation layers.
+            // DebugUtilsMessenger is unsafe so this block is required to be
+            // unsafe.
             unsafe {
                 DebugUtilsMessenger::new(
                     instance.clone(),
@@ -99,12 +102,8 @@ impl VkWindow {
                                     .intersects(DebugUtilsMessageSeverity::INFO)
                                 {
                                     "information"
-                                } else if msg.severity.intersects(
-                                    DebugUtilsMessageSeverity::VERBOSE,
-                                ) {
+                                } else  {
                                     "verbose"
-                                } else {
-                                    panic!("no-impl");
                                 };
 
                                 let ty = if msg
@@ -116,12 +115,8 @@ impl VkWindow {
                                     DebugUtilsMessageType::VALIDATION,
                                 ) {
                                     "validation"
-                                } else if msg.ty.intersects(
-                                    DebugUtilsMessageType::PERFORMANCE,
-                                ) {
-                                    "performance"
                                 } else {
-                                    panic!("no-impl");
+                                    "performance"
                                 };
 
                                 println!(

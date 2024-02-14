@@ -609,7 +609,7 @@ impl Boss {
         let (image_index, acquire_future) = match self.acquire_next_image() {
             Ok(r) => r,
             Err(RhError::SwapchainOutOfDate) => return Ok(()),
-            Err(e) => panic!("Could not acquire next image: {e:?}"),
+            Err(e) => return Err(e),
         };
 
         // Create command buffer. For dynamic rendering, begin_rendering
