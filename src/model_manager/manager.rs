@@ -4,12 +4,11 @@ use super::{
     material::{PbrMaterial, TexMaterial},
     mesh,
     model::{JointTransforms, Model},
-    pipeline::Pipeline,
+    pipeline::{Pipeline, PushConstantData, UniformM},
 };
 use crate::{
     file_import::{Batch, DeviceVertexBuffers, Material, MeshLoaded},
     pbr_lights::PbrLightTrait,
-    pbr_pipeline::{PbrPipeline, PushConstantData, UniformM},
     rh_error::RhError,
     texture::Manager as TextureManager,
     types::{CameraTrait, RenderFormat},
@@ -84,8 +83,8 @@ impl Manager {
         &self.texture_manager
     }
 
-    fn create_pipeline<T: VertexTrait>(&self) -> Result<PbrPipeline, RhError> {
-        PbrPipeline::new::<T>(
+    fn create_pipeline<T: VertexTrait>(&self) -> Result<Pipeline, RhError> {
+        Pipeline::new::<T>(
             self.device.clone(),
             self.mem_allocator.clone(),
             &self.render_format,
@@ -114,7 +113,7 @@ impl Manager {
         let pp_index = self.pipelines.len();
         if pp_index == 0 {
             let pp = self.create_pipeline::<U>()?;
-            self.pipelines.push(Pipeline { pipeline: pp });
+            self.pipelines.push(pp);
         }
 
         // Successful return will be a vector of the mesh indices
@@ -157,14 +156,14 @@ impl Manager {
 
         // Process the materials, creating descriptors
         let layout = util::get_layout(
-            &self.pipelines[pp_index].pipeline.graphics,
+            &self.pipelines[pp_index].graphics,
             TEX_SET as usize,
         )?;
         for m in tex_materials {
             self.materials.push(material::tex_to_pbr(
                 &m,
                 &self.set_allocator,
-                &self.pipelines[pp_index].pipeline.sampler,
+                &self.pipelines[pp_index].sampler,
                 layout,
             )?);
         }
@@ -291,8 +290,7 @@ impl Manager {
                 norm_view: mv.into(),
                 joints: self.models[index].joints.into(),
             };
-            let buffer =
-                self.pipelines[pp_index].pipeline.m_pool.allocate_sized()?;
+            let buffer = self.pipelines[pp_index].m_pool.allocate_sized()?;
             *buffer.write()? = data;
             buffer
         };
@@ -300,7 +298,7 @@ impl Manager {
             // Set 1
             desc_set_allocator,
             util::get_layout(
-                &self.pipelines[pp_index].pipeline.graphics,
+                &self.pipelines[pp_index].graphics,
                 M_SET as usize,
             )?
             .clone(),
@@ -310,7 +308,7 @@ impl Manager {
         // CommandBufferBuilder should have a render pass started
         cbb.bind_descriptor_sets(
             PipelineBindPoint::Graphics,
-            self.pipelines[pp_index].pipeline.layout().clone(),
+            self.pipelines[pp_index].layout().clone(),
             M_SET, // starting set, higher values also changed
             desc_set,
         );
@@ -359,12 +357,12 @@ impl Manager {
                 };
                 cbb.bind_descriptor_sets(
                     PipelineBindPoint::Graphics,
-                    self.pipelines[pp_index].pipeline.layout().clone(),
+                    self.pipelines[pp_index].layout().clone(),
                     TEX_SET,
                     material.texture_set.clone(),
                 )
                 .push_constants(
-                    self.pipelines[pp_index].pipeline.layout().clone(),
+                    self.pipelines[pp_index].layout().clone(),
                     0,              // offset (must be multiple of 4)
                     push_constants, // (size must be multiple of 4)
                 );
@@ -402,7 +400,7 @@ impl Manager {
             if need_bind {
                 // Bind pipeline
                 if ppi < self.pipelines.len() {
-                    self.pipelines[ppi].pipeline.start_pass(
+                    self.pipelines[ppi].start_pass(
                         cbb,
                         desc_set_allocator,
                         camera,

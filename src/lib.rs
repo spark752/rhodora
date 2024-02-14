@@ -8,7 +8,6 @@ pub mod keyboard;
 pub mod memory;
 pub mod model_manager;
 pub mod pbr_lights;
-pub mod pbr_pipeline;
 pub mod postprocess;
 pub mod rh_error;
 pub mod texture;
