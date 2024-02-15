@@ -1,5 +1,5 @@
 use crate::{
-    file_import::{MeshLoaded, Submesh},
+    mesh_import::{MeshLoaded, Submesh},
     rh_error::RhError,
 };
 

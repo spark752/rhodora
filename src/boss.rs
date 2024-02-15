@@ -1,7 +1,7 @@
 use crate::{
-    file_import::{Batch, DeviceVertexBuffers, FileToLoad},
     memory::Memory,
-    model_manager::{DvbWrapper, Manager as ModelManager},
+    mesh_import::{Batch, FileToLoad, Style},
+    model_manager::Manager as ModelManager,
     pbr_lights::PbrLightTrait,
     postprocess::PostProcess,
     rh_error::RhError,
@@ -11,7 +11,6 @@ use crate::{
         RenderFormat, SwapchainView, TransferFuture,
     },
     util,
-    vertex::{InterVertexTrait, SkinnedFormat},
     vk_window::{Properties, VkWindow},
 };
 use log::{error, info};
@@ -28,9 +27,7 @@ use vulkano::{
     format::Format,
     image::view::ImageView,
     image::{SampleCount, SwapchainImage},
-    pipeline::graphics::{
-        vertex_input::Vertex as VertexTrait, viewport::Viewport,
-    },
+    pipeline::graphics::viewport::Viewport,
     render_pass::{LoadOp, StoreOp},
     swapchain::{
         AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
@@ -656,9 +653,9 @@ impl Boss {
     ) -> Result<usize, RhError> {
         // Vertex format was once hard coded in lowest levels but now has made
         // it all the way up to here. Still some more to go.
-        let mut batch = Batch::<SkinnedFormat>::new();
+        let mut batch = Batch::new(Style::Skinned);
         batch.load(file)?;
-        let ret = self.model_manager.load_batch(cbb, batch)?;
+        let ret = self.model_manager.process_batch(cbb, batch)?;
         Ok(ret[0])
     }
 
@@ -684,16 +681,12 @@ impl Boss {
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch<T, U>(
+    pub fn load_batch<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: Batch<U>,
-    ) -> Result<Vec<usize>, RhError>
-    where
-        U: VertexTrait + InterVertexTrait,
-        DvbWrapper: From<DeviceVertexBuffers<U>>,
-    {
-        self.model_manager.load_batch(cbb, batch)
+        batch: Batch,
+    ) -> Result<Vec<usize>, RhError> {
+        self.model_manager.process_batch(cbb, batch)
     }
 
     #[allow(clippy::cast_possible_truncation)]

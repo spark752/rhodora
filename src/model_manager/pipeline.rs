@@ -1,8 +1,10 @@
 use crate::{
+    mesh_import::Style,
     pbr_lights::PbrLightTrait,
     rh_error::RhError,
     types::{CameraTrait, RenderFormat},
     util,
+    vertex::{RigidFormat, SkinnedFormat},
 };
 use std::sync::Arc;
 use vulkano::{
@@ -31,6 +33,7 @@ use vulkano::{
         Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
         SamplerMipmapMode, LOD_CLAMP_NONE,
     },
+    shader::ShaderModule,
 };
 
 const VPL_SET: u32 = 0;
@@ -38,64 +41,100 @@ const VPL_BINDING: u32 = 0;
 
 // Two descriptor sets: one for view and projection matrices which change once
 // per frame, the other for model matrix which is different for each model
-pub type UniformVPL = vs::VPL;
-pub type UniformM = vs::M;
+pub type UniformVPL = skinned_vs::VPL;
+pub type UniformM = skinned_vs::M;
 pub type PushConstantData = pbr_fs::PushConstantData;
 
 pub struct Pipeline {
+    pub style: Style,
     pub graphics: Arc<GraphicsPipeline>,
     pub sampler: Arc<Sampler>,
     pub vpl_pool: SubbufferAllocator,
     pub m_pool: SubbufferAllocator,
 }
 
+/// Helper function to build a vulkano pipeline compatible with vertex format T
+///
+/// # Errors
+/// May return `RhError`
+fn build_vk_pipeline<T: Vertex>(
+    device: Arc<Device>,
+    render_format: &RenderFormat,
+    vert_shader: &Arc<ShaderModule>,
+    frag_shader: &Arc<ShaderModule>,
+) -> Result<Arc<GraphicsPipeline>, RhError> {
+    Ok(GraphicsPipeline::start()
+        .render_pass(PipelineRenderingCreateInfo {
+            color_attachment_formats: vec![Some(render_format.colour_format)],
+            depth_attachment_format: Some(render_format.depth_format),
+            ..Default::default()
+        })
+        .multisample_state(MultisampleState {
+            rasterization_samples: render_format.sample_count,
+            ..Default::default()
+        })
+        .color_blend_state(util::alpha_blend_enable())
+        .vertex_input_state(T::per_vertex())
+        .input_assembly_state(InputAssemblyState::new())
+        .vertex_shader(
+            vert_shader
+                .entry_point("main")
+                .ok_or(RhError::VertexShaderError)?,
+            (),
+        )
+        .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+        .fragment_shader(
+            frag_shader
+                .entry_point("main")
+                .ok_or(RhError::FragmentShaderError)?,
+            (),
+        )
+        .depth_stencil_state(DepthStencilState::simple_depth_test())
+        .build(device)?)
+}
+
 impl Pipeline {
-    /// Create a PBR pipeline compatible with a `Position` vertex buffer and
-    /// an interleaved vertex buffer of type T.
+    /// Creates a graphics pipeline. The `Style` should be selected to be
+    /// compatible with the desired functionality and vertex format
+    /// (`RigidFormat`, `SkinnedFormat`, etc.) used by the mesh.
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn new<T: Vertex>(
+    pub fn new(
+        style: Style,
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
         render_format: &RenderFormat,
     ) -> Result<Self, RhError> {
-        let vert_shader = vs::load(device.clone())?;
-        let frag_shader = pbr_fs::load(device.clone())?;
-        //let frag_shader = viz_fs::load(device.clone())?; // TEST
-        let graphics =
-            GraphicsPipeline::start()
-                .render_pass(PipelineRenderingCreateInfo {
-                    color_attachment_formats: vec![Some(
-                        render_format.colour_format,
-                    )],
-                    depth_attachment_format: Some(render_format.depth_format),
-                    ..Default::default()
-                })
-                .multisample_state(MultisampleState {
-                    rasterization_samples: render_format.sample_count,
-                    ..Default::default()
-                })
-                .color_blend_state(util::alpha_blend_enable())
-                .vertex_input_state(T::per_vertex())
-                .input_assembly_state(InputAssemblyState::new())
-                .vertex_shader(
-                    vert_shader
-                        .entry_point("main")
-                        .ok_or(RhError::VertexShaderError)?,
-                    (),
-                )
-                .viewport_state(
-                    ViewportState::viewport_dynamic_scissor_irrelevant(),
-                )
-                .fragment_shader(
-                    frag_shader
-                        .entry_point("main")
-                        .ok_or(RhError::FragmentShaderError)?,
-                    (),
-                )
-                .depth_stencil_state(DepthStencilState::simple_depth_test())
-                .build(device.clone())?;
+        // Vulkano pipeline is build based on the style, which determines the
+        // shaders and the expected vertex format
+        let graphics = {
+            match style {
+                Style::Rigid => build_vk_pipeline::<RigidFormat>(
+                    device.clone(),
+                    render_format,
+                    &rigid_vs::load(device.clone())?,
+                    &pbr_fs::load(device.clone())?,
+                ),
+                Style::Skinned => build_vk_pipeline::<SkinnedFormat>(
+                    device.clone(),
+                    render_format,
+                    &skinned_vs::load(device.clone())?,
+                    &pbr_fs::load(device.clone())?,
+                    //&viz_fs::load(device.clone())?, // Test FIXME
+                ),
+                /* FIXME Visualize could be skinned or not
+                Style::Visualize => build_vk_pipeline::<SkinnedFormat>(
+                    device.clone(),
+                    render_format,
+                    &skinned_vs::load(device.clone())?,
+                    &viz_fs::load(device.clone())?,
+                ),*/
+            }
+        }?;
+
+        // Probably don't need to create a new sampler each time since all
+        // of these are the same
         let sampler = Sampler::new(
             device,
             SamplerCreateInfo {
@@ -108,6 +147,8 @@ impl Pipeline {
                 ..Default::default()
             },
         )?;
+
+        // These need to be customizable somehow
         let vpl_pool = SubbufferAllocator::new(
             mem_allocator.clone(),
             SubbufferAllocatorCreateInfo {
@@ -122,7 +163,9 @@ impl Pipeline {
                 ..Default::default()
             },
         );
+
         Ok(Self {
+            style,
             graphics,
             sampler,
             vpl_pool,
@@ -175,7 +218,14 @@ impl Pipeline {
 }
 
 // Shaders
-mod vs {
+mod rigid_vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        path: "shaders/rigid.vert.glsl",
+    }
+}
+
+mod skinned_vs {
     // TODO: It would be nice if we could pass the const to the shader
     use crate::types::MAX_JOINTS;
     #[allow(clippy::assertions_on_constants)]

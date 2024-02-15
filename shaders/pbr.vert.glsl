@@ -22,7 +22,6 @@ layout(location = 2) out vec2 f_tex_coord;
 // created for either mat3 or mat3x4.
 layout(set = 1, binding = 0) uniform M {
     mat4 model_view;
-    mat4 norm_view;
     mat2x4 joints[MAX_JOINTS];
 } m;
 
@@ -50,7 +49,7 @@ void main() {
     // Real part of dual quaternion for normal rotation
     vec4 an = vec4(normal + 2.0 * cross(dq[0].xyz,
         cross(dq[0].xyz, normal) + dq[0].w * normal), 0.0);
-    f_normal = vec3(m.norm_view * an);
+    f_normal = vec3(m.model_view * an);
 
     // Projected position as OpenGL style output
     gl_Position = vpl.proj * pos_vs;

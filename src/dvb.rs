@@ -1,7 +1,4 @@
-use crate::{
-    rh_error::RhError,
-    vertex::{IndexBuffer, InterBuffer, InterVertexTrait},
-};
+use crate::rh_error::RhError;
 use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -9,22 +6,19 @@ use vulkano::{
     memory::allocator::{
         AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator,
     },
-    pipeline::graphics::vertex_input::Vertex as VertexTrait,
+    pipeline::graphics::vertex_input::Vertex,
 };
 
 /// Buffers that pass vertex data to the GPU. Note that `DeviceVertexBuffers`
-/// is generic over any sized type for any sort of vertices but the `new`
-/// method is restricted to the Rhodora vertex formats.
+/// uses 16 bit indices but is generic for any interleaved vertex format.
 pub struct DeviceVertexBuffers<T> {
     pub indices: Subbuffer<[u16]>,
     pub interleaved: Subbuffer<[T]>,
 }
 
-impl<T: VertexTrait + InterVertexTrait> DeviceVertexBuffers<T> {
-    /// Note that `DeviceVertexBuffers` is generic over any sized type
-    /// for any sort of vertices but this method requires a type with the
-    /// Vulkano `Vertex` trait and the Rhodora `InterVertexTrait` used by other
-    /// buffer types.
+impl<T: Vertex> DeviceVertexBuffers<T> {
+    /// Creates a new `DeviceVertexBuffers` object storing the specified
+    /// vertex format which must implement the Vulkano `Vertex` trait
     ///
     /// # Errors
     /// May return `RhError`
@@ -32,8 +26,8 @@ impl<T: VertexTrait + InterVertexTrait> DeviceVertexBuffers<T> {
     pub fn new<U>(
         _cbb: &mut AutoCommandBufferBuilder<U>, // See below
         mem_allocator: Arc<StandardMemoryAllocator>, // Not a reference
-        vb_index: IndexBuffer,                  // Not a reference
-        vb_inter: InterBuffer<T>,               // Not a reference
+        index_buff: Vec<u16>,                   // Not a reference
+        inter_buff: Vec<T>,                     // Not a reference
     ) -> Result<Self, RhError> {
         // Create commands to send the buffers to the GPU
         // FIXME The first parameter gave access to a command queue that
@@ -50,7 +44,7 @@ impl<T: VertexTrait + InterVertexTrait> DeviceVertexBuffers<T> {
                 usage: MemoryUsage::Upload,
                 ..Default::default()
             },
-            vb_index.indices,
+            index_buff,
         )?;
         let interleaved = Buffer::from_iter(
             &mem_allocator,
@@ -62,7 +56,7 @@ impl<T: VertexTrait + InterVertexTrait> DeviceVertexBuffers<T> {
                 usage: MemoryUsage::Upload,
                 ..Default::default()
             },
-            vb_inter.interleaved,
+            inter_buff,
         )?;
         Ok(Self {
             indices,

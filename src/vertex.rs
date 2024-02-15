@@ -1,7 +1,7 @@
 // Standard vertex format is to have two streams:
 // Position = positions only
 // Interleaved = all other data, interleaved
-use crate::file_import::ImportVertex;
+use crate::mesh_import::{ImportVertex, Style};
 use bytemuck::{Pod, Zeroable};
 use vulkano::pipeline::graphics::vertex_input::Vertex;
 
@@ -12,15 +12,15 @@ pub struct IndexBuffer {
 }
 
 impl IndexBuffer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn push_index(&mut self, idx: u16) {
         self.indices.push(idx);
     }
 }
-
-/// Trait required for all vertex formats used by the interleaved buffer.
-/// Note this trait is in addition to the Vulkano `Vertex` trait required for
-/// all vertex formats.
-pub trait InterVertexTrait: Copy + Default + From<ImportVertex> {}
 
 /// Vertex format for the interleaved buffer of unskinned meshes
 #[repr(C)]
@@ -33,8 +33,6 @@ pub struct RigidFormat {
     #[format(R32G32_SFLOAT)]
     pub tex_coord: [f32; 2],
 }
-
-impl InterVertexTrait for RigidFormat {}
 
 impl From<ImportVertex> for RigidFormat {
     fn from(f: ImportVertex) -> Self {
@@ -62,8 +60,6 @@ pub struct SkinnedFormat {
     pub weights: [f32; 4],
 }
 
-impl InterVertexTrait for SkinnedFormat {}
-
 impl From<ImportVertex> for SkinnedFormat {
     fn from(f: ImportVertex) -> Self {
         Self {
@@ -79,19 +75,29 @@ impl From<ImportVertex> for SkinnedFormat {
     }
 }
 
-/// Interleaved vertex buffer generic over different formats
-#[derive(Default)]
-pub struct InterBuffer<T: InterVertexTrait> {
-    pub interleaved: Vec<T>,
+pub enum Format {
+    Rigid(Vec<RigidFormat>),
+    Skinned(Vec<SkinnedFormat>),
 }
 
-impl<T: InterVertexTrait> InterBuffer<T> {
+pub struct InterBuffer {
+    pub interleaved: Format,
+}
+
+impl InterBuffer {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new(style: Style) -> Self {
+        let interleaved = match style {
+            Style::Rigid => Format::Rigid(Vec::new()),
+            Style::Skinned => Format::Skinned(Vec::new()),
+        };
+        Self { interleaved }
     }
 
-    pub fn push(&mut self, f: &T) {
-        self.interleaved.push(*f);
+    pub fn push(&mut self, f: ImportVertex) {
+        match &mut self.interleaved {
+            Format::Rigid(ref mut x) => x.push(f.into()),
+            Format::Skinned(ref mut x) => x.push(f.into()),
+        }
     }
 }

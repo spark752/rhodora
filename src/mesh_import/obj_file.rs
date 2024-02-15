@@ -1,6 +1,6 @@
 use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
 use crate::rh_error::RhError;
-use crate::vertex::{IndexBuffer, InterBuffer, InterVertexTrait};
+use crate::vertex::{IndexBuffer, InterBuffer};
 use log::{info, warn};
 
 /// Load a Wavefront OBJ format object from an .obj file. Loads the file into
@@ -9,10 +9,10 @@ use log::{info, warn};
 ///
 /// # Errors
 /// May return `RhError`
-pub fn load<T: InterVertexTrait>(
+pub fn load(
     file: &FileToLoad,
     vb_index: &mut IndexBuffer,
-    vb_inter: &mut InterBuffer<T>,
+    vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let load_result = tobj::load_obj(&file.filename, &tobj::GPU_LOAD_OPTIONS);
     process_obj(file, load_result, vb_index, vb_inter)
@@ -23,11 +23,11 @@ pub fn load<T: InterVertexTrait>(
 ///
 /// # Errors
 /// May return `RhError`
-pub fn process_obj<T: InterVertexTrait>(
+pub fn process_obj(
     file: &FileToLoad,
     load_result: tobj::LoadResult,
     vb_index: &mut IndexBuffer,
-    vb_inter: &mut InterBuffer<T>,
+    vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let (tobj_models, tobj_materials) = load_result?;
     info!("Found {} Models", tobj_models.len());
@@ -88,7 +88,7 @@ pub fn process_obj<T: InterVertexTrait>(
                 },
                 ..Default::default()
             };
-            vb_inter.push(&bf.into());
+            vb_inter.push(bf);
         }
 
         // Convert to 16 bit indices
@@ -122,7 +122,7 @@ pub fn process_obj<T: InterVertexTrait>(
     // "Pm" for metalness so that is implemented here.
     let mut materials = Vec::new();
     for m in &tobj_materials.unwrap_or_default() {
-        info!("Processing {:?}", m.name);
+        info!("Processing material {:?}", m.name);
         let material = Material {
             colour_filename: m.diffuse_texture.clone(),
             diffuse: m.diffuse,

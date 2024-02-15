@@ -1,5 +1,5 @@
 use crate::{
-    file_import::DeviceVertexBuffers,
+    dvb::DeviceVertexBuffers,
     vertex::{RigidFormat, SkinnedFormat},
 };
 

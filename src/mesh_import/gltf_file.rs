@@ -1,7 +1,7 @@
 use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
 use crate::{
     rh_error::RhError,
-    vertex::{IndexBuffer, InterBuffer, InterVertexTrait},
+    vertex::{IndexBuffer, InterBuffer},
 };
 use gltf::{
     accessor::Dimensions,
@@ -126,10 +126,10 @@ where
 /// May return `RhError`
 //#[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_lines)]
-pub fn load<T: InterVertexTrait>(
+pub fn load(
     file: &FileToLoad,
     vb_index: &mut IndexBuffer,
-    vb_inter: &mut InterBuffer<T>,
+    vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let scale = file.scale;
     let swizzle = file.swizzle;
@@ -275,7 +275,7 @@ pub fn load<T: InterVertexTrait>(
 
             // Push the import vertex data into the output buffer
             for v in verts {
-                vb_inter.push(&v.into());
+                vb_inter.push(v);
             }
 
             // Collect information

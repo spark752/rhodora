@@ -7,13 +7,14 @@ use super::{
     pipeline::{Pipeline, PushConstantData, UniformM},
 };
 use crate::{
-    file_import::{Batch, DeviceVertexBuffers, Material, MeshLoaded},
+    dvb::DeviceVertexBuffers,
+    mesh_import::{Batch, Material, MeshLoaded, Style},
     pbr_lights::PbrLightTrait,
     rh_error::RhError,
     texture::Manager as TextureManager,
     types::{CameraTrait, RenderFormat},
     util,
-    vertex::InterVertexTrait,
+    vertex::{Format, SkinnedFormat},
 };
 use log::{error, info};
 use nalgebra_glm as glm;
@@ -83,36 +84,41 @@ impl Manager {
         &self.texture_manager
     }
 
-    fn create_pipeline<T: VertexTrait>(&self) -> Result<Pipeline, RhError> {
-        Pipeline::new::<T>(
+    /// Helper function to create a compatible pipeline
+    ///
+    /// # Errors
+    /// May return `RhError`
+    fn create_pipeline(&self, style: Style) -> Result<Pipeline, RhError> {
+        Pipeline::new(
+            style,
             self.device.clone(),
             self.mem_allocator.clone(),
             &self.render_format,
         )
     }
 
-    // Helper function generic for vertex formats provided the associated
-    // `DeviceVertexBuffer` can be `.into()` the DVB enum. That should be
-    // all Rhodora interleaved formats but the conditions were a bit tricky
-    // to write. Then they have to propogate up to all the pub functions.
-    // Additionally the command buffer builder could be primary or secondary
-    // in theory, but secondary has probably never been tested.
-    fn load_batch_impl<T, U>(
+    /// Private helper function to process the batch.
+    ///
+    /// the command buffer builder could be primary or secondary
+    /// in theory, but secondary has probably never been tested.
+    ///
+    /// # Errors
+    /// May return `RhError`
+    fn process_batch_impl<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: Batch<U>,                   // Not a reference
+        batch: Batch,                      // Not a reference
         tex_opt: Option<Vec<TexMaterial>>, // Not a reference
-    ) -> Result<Vec<usize>, RhError>
-    where
-        U: VertexTrait + InterVertexTrait,
-        DvbWrapper: From<DeviceVertexBuffers<U>>,
-    {
+    ) -> Result<Vec<usize>, RhError> {
         // Look for an existing pipeline with the right configuration. If none
         // exists, create one.
         // FIXME: What does that mean? How do we do it?
+        // Note that this is no longer generic over the vertex format. The
+        // pipeline figures that out by a `Style` parameter... that we have to
+        // add somewhere.
         let pp_index = self.pipelines.len();
         if pp_index == 0 {
-            let pp = self.create_pipeline::<U>()?;
+            let pp = self.create_pipeline(Style::Skinned)?;
             self.pipelines.push(pp);
         }
 
@@ -121,13 +127,19 @@ impl Manager {
 
         // Create and store the shared DeviceVertexBuffer
         let dvb_index = self.dvbs.len();
-        let dvb = DeviceVertexBuffers::<U>::new(
-            cbb,
-            self.mem_allocator.clone(),
-            batch.vb_index,
-            batch.vb_inter,
-        )?;
-        self.dvbs.push(dvb.into());
+        // FIXME Do a much better job with this
+        if batch.style == Style::Skinned {
+            let Format::Skinned(data) = batch.vb_inter.interleaved else {
+                todo!("Please fix this");
+            };
+            let dvb = DeviceVertexBuffers::<SkinnedFormat>::new(
+                cbb,
+                self.mem_allocator.clone(),
+                batch.vb_index.indices,
+                data,
+            )?;
+            self.dvbs.push(dvb.into());
+        };
 
         // Convert the meshes and store in Model Manager
         let meshes = mesh::convert_batch_meshes(&batch.meshes)?;
@@ -171,41 +183,44 @@ impl Manager {
         Ok(ret)
     }
 
-    /// Load a batch of meshes and their materials
+    /// Processes a batch of meshes and their materials. The meshes should have
+    /// already been loaded from files into the `batch` using the `Batch::load`
+    /// method. That will have also collected material data but does not load
+    /// the texture files so that will be done here. Therefore this function
+    /// may take several seconds to return. If loading the textures separately,
+    /// use `process_meshes` instead.
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch<T, U>(
+    pub fn process_batch<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: Batch<U>, // Not a reference
-    ) -> Result<Vec<usize>, RhError>
-    where
-        U: VertexTrait + InterVertexTrait,
-        DvbWrapper: From<DeviceVertexBuffers<U>>,
-    {
-        self.load_batch_impl(cbb, batch, None)
+        batch: Batch, // Not a reference
+    ) -> Result<Vec<usize>, RhError> {
+        self.process_batch_impl(cbb, batch, None)
     }
 
-    /// Load a batch of meshes with provided materials. Useful if you have
-    /// created the materials seperately, for example by loading texture files
-    /// in a separate thread.
+    /// Processes a batch of meshes and their materials. The meshes should have
+    /// already been loaded from files into the `batch` using the `Batch::load`
+    /// method. Materials should be provided with texture files already loaded.
+    /// This function should be faster than `process_batch` which includes
+    /// loading the textures.
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load_batch_meshes<T, U>(
+    pub fn process_meshes<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        batch: Batch<U>,                 // Not a reference
+        batch: Batch,                    // Not a reference
         tex_materials: Vec<TexMaterial>, // Not a reference
-    ) -> Result<Vec<usize>, RhError>
-    where
-        U: VertexTrait + InterVertexTrait,
-        DvbWrapper: From<DeviceVertexBuffers<U>>,
-    {
-        self.load_batch_impl(cbb, batch, Some(tex_materials))
+    ) -> Result<Vec<usize>, RhError> {
+        self.process_batch_impl(cbb, batch, Some(tex_materials))
     }
 
+    /// Private helper for creating the material by loading the texture
+    ///
+    /// # Errors
+    /// May return `RhError`
     fn load_material<T>(
         &mut self,
         m: &Material,
@@ -258,37 +273,73 @@ impl Manager {
         &self.models[index].matrix
     }
 
+    /// Draws a given model. You have to bind the correct pipeline first.
+    ///
+    /// This may be removed in the future. Applications
+    /// should prefer to use `draw_all` to draw all of the models.
+    ///
     /// # Errors
     /// May return `RhError`
+    // Added index validation to make the function return errors instead
+    // of panicing and that made clippy decide it was too long.
+    #[allow(clippy::too_many_lines)]
     pub fn draw<T>(
         &self,
-        index: usize,
+        model_index: usize,
         cbb: &mut AutoCommandBufferBuilder<T>,
         desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
-        if !self.models[index].visible {
+        // Validate
+        if model_index >= self.models.len() {
+            error!(
+                "model_index={} with len={}",
+                model_index,
+                self.models.len()
+            );
+            return Err(RhError::IndexTooLarge);
+        }
+
+        // If not visible, draw nothing
+        if !self.models[model_index].visible {
             return Ok(());
         }
-        let pp_index = self.models[index].pipeline_index;
+
+        // Get the pipeline and validate
+        let pp_index = self.models[model_index].pipeline_index;
+        if pp_index >= self.pipelines.len() {
+            error!(
+                "model_index={} uses pipeline_index={} with len={}",
+                model_index,
+                pp_index,
+                self.pipelines.len()
+            );
+            return Err(RhError::IndexTooLarge);
+        }
+
+        // Get the DVB and validate
+        let dvb_index = self.models[model_index].dvb_index;
+        if dvb_index >= self.dvbs.len() {
+            error!(
+                "model_index={} uses dvb_index={} with len={}",
+                model_index,
+                dvb_index,
+                self.dvbs.len()
+            );
+            return Err(RhError::IndexTooLarge);
+        }
 
         // Uniform buffer for model matrix and texture is in descriptor set 1
         // since this will change for each model and updating a descriptor set
         // unbinds all of those with higher numbers
         let m_buffer = {
             // `model_view` is for converting positions to view space.
-            // `norm_view` is for converting normals to view space. It could
-            // be a `glm::Mat3` but std140 pads these and there is no compatible
-            // `into()` method so a `glm::Mat4` is currently used insted. This
-            // should be calculated from the transpose of the inverse of
-            // `model_view` but unless there is non-uniform scaling this should
-            // work. Of course this means there is no reason to actually send
-            // it separately, so I guess FIXME.
-            let mv = camera.view_matrix() * self.models[index].matrix;
+            // It is also used for normals because non-uniform scaling is not
+            // supported.
+            let mv = camera.view_matrix() * self.models[model_index].matrix;
             let data = UniformM {
                 model_view: mv.into(),
-                norm_view: mv.into(),
-                joints: self.models[index].joints.into(),
+                joints: self.models[model_index].joints.into(),
             };
             let buffer = self.pipelines[pp_index].m_pool.allocate_sized()?;
             *buffer.write()? = data;
@@ -324,7 +375,6 @@ impl Manager {
             cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
                 .bind_index_buffer(dvb.indices.clone());
         }
-        let dvb_index = self.models[index].dvb_index;
         match &self.dvbs[dvb_index] {
             DvbWrapper::Skinned(dvb) => {
                 bind_dvbs(cbb, dvb);
@@ -338,12 +388,22 @@ impl Manager {
         // All of the submeshes are in the buffers and share a model matrix
         // but they do need separate textures. They also have a rendering
         // order that should be used instead of as stored.
-        for i in &self.models[index].mesh.order {
-            let sub = self.models[index].mesh.submeshes[*i];
+        for i in &self.models[model_index].mesh.order {
+            if *i >= self.models[model_index].mesh.submeshes.len() {
+                error!(
+                    "model_index={} uses submesh={} with len={}",
+                    model_index,
+                    *i,
+                    self.models[model_index].mesh.submeshes.len()
+                );
+                return Err(RhError::IndexTooLarge);
+            }
+            let sub = self.models[model_index].mesh.submeshes[*i];
 
             // If the submesh has a material then use it
             if let Some(mat_id) = sub.material_id {
-                let lib_mat_id = mat_id + self.models[index].material_offset;
+                let lib_mat_id =
+                    mat_id + self.models[model_index].material_offset;
                 let material = &self.materials[lib_mat_id];
                 let push_constants = PushConstantData {
                     diffuse: [
@@ -393,6 +453,9 @@ impl Manager {
     ) -> Result<(), RhError> {
         let mut bound_ppi: Option<usize> = None; // Index of bound pipeline
 
+        // There is no sorting here so we could potentially be switching
+        // pipelines more often then needed. This can be avoided by loading
+        // the batches in a logical order.
         for model_index in 0..self.models.len() {
             // Check if we need to bind a new pipeline for this model
             let ppi = self.models[model_index].pipeline_index;

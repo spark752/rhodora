@@ -16,11 +16,12 @@
     #define SHOW_NORMALS 1      // Overrides lighting
     #define SHOW_ROUGHNESS 2    // Overrides lighting
     #define SHOW_METALNESS 3    // Overrides lighting
+    #define SHOW_MIPMAP 4       // Overrides lighting
 
     // TODO: Move these to push constants
     uint ambient_mode = USE_AMBIENT;
     uint specular_mode = USE_SPECULAR;
-    uint override_mode = SHOW_ROUGHNESS;
+    uint override_mode = SHOW_MIPMAP;
 #endif
 
 // Inputs from vertex shaders
@@ -156,6 +157,19 @@ void main() {
             case SHOW_METALNESS:
                 shade = vec3(metalness);
                 break;
+            case SHOW_MIPMAP:
+                int mml = clamp(int(textureQueryLod(tex, f_tex_coord).x), 0, 7);
+                vec3 table[8] = {
+                    vec3(1.0, 0.0, 0.0), // R
+                    vec3(1.0, 0.5, 0.0), // O
+                    vec3(1.0, 1.0, 0.0), // Y
+                    vec3(0.0, 1.0, 0.0), // G
+                    vec3(0.0, 0.0, 1.0), // B
+                    vec3(0.3, 0.0, 0.5), // I
+                    vec3(1.0, 0.0, 1.0), // V
+                    vec3(0.0, 0.0, 0.0)  // K
+                };
+                shade = table[mml];
             default:
                 break;
         }
