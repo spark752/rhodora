@@ -14,7 +14,7 @@ use crate::{
     texture::Manager as TextureManager,
     types::{CameraTrait, RenderFormat},
     util,
-    vertex::{Format, SkinnedFormat},
+    vertex::{Format, RigidFormat, SkinnedFormat},
 };
 use log::{error, info};
 use nalgebra_glm as glm;
@@ -97,6 +97,27 @@ impl Manager {
         )
     }
 
+    /// Helper function to search for a compatible pipeline, creating one if
+    /// needed, and returning the index
+    ///
+    /// # Errors
+    /// May return `RhError`
+    fn find_create_pipeline(&mut self, style: Style) -> Result<usize, RhError> {
+        let pp_search = self.pipelines.iter().position(|p| p.style == style);
+
+        // The question mark operator in the else clause keeps us from
+        // using an `or_else` type method here
+        if let Some(i) = pp_search {
+            Ok(i)
+        } else {
+            // Add new pipeline and return its index
+            let i = self.pipelines.len();
+            let pp = self.create_pipeline(style)?;
+            self.pipelines.push(pp);
+            Ok(i)
+        }
+    }
+
     /// Private helper function to process the batch.
     ///
     /// the command buffer builder could be primary or secondary
@@ -112,15 +133,7 @@ impl Manager {
     ) -> Result<Vec<usize>, RhError> {
         // Look for an existing pipeline with the right configuration. If none
         // exists, create one.
-        // FIXME: What does that mean? How do we do it?
-        // Note that this is no longer generic over the vertex format. The
-        // pipeline figures that out by a `Style` parameter... that we have to
-        // add somewhere.
-        let pp_index = self.pipelines.len();
-        if pp_index == 0 {
-            let pp = self.create_pipeline(Style::Skinned)?;
-            self.pipelines.push(pp);
-        }
+        let pp_index = self.find_create_pipeline(batch.style)?;
 
         // Successful return will be a vector of the mesh indices
         let mut ret = Vec::new();
@@ -130,9 +143,22 @@ impl Manager {
         // FIXME Do a much better job with this
         if batch.style == Style::Skinned {
             let Format::Skinned(data) = batch.vb_inter.interleaved else {
-                todo!("Please fix this");
+                error!("Mismatch between batch style and data");
+                return Err(RhError::UnsupportedFormat);
             };
             let dvb = DeviceVertexBuffers::<SkinnedFormat>::new(
+                cbb,
+                self.mem_allocator.clone(),
+                batch.vb_index.indices,
+                data,
+            )?;
+            self.dvbs.push(dvb.into());
+        } else {
+            let Format::Rigid(data) = batch.vb_inter.interleaved else {
+                error!("Mismatch between batch style and data");
+                return Err(RhError::UnsupportedFormat);
+            };
+            let dvb = DeviceVertexBuffers::<RigidFormat>::new(
                 cbb,
                 self.mem_allocator.clone(),
                 batch.vb_index.indices,
