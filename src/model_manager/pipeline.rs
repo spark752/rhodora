@@ -108,28 +108,30 @@ impl Pipeline {
     ) -> Result<Self, RhError> {
         // Vulkano pipeline is build based on the style, which determines the
         // shaders and the expected vertex format
+
+        //const USE_VIZ: bool = true; // Use for testing FIXME
+
+        const USE_VIZ: bool = false; // Use for testing FIXME
+
+        let frag_shader = if USE_VIZ {
+            viz_fs::load(device.clone())?
+        } else {
+            pbr_fs::load(device.clone())?
+        };
         let graphics = {
             match style {
                 Style::Rigid => build_vk_pipeline::<RigidFormat>(
                     device.clone(),
                     render_format,
                     &rigid_vs::load(device.clone())?,
-                    &pbr_fs::load(device.clone())?,
+                    &frag_shader,
                 ),
                 Style::Skinned => build_vk_pipeline::<SkinnedFormat>(
                     device.clone(),
                     render_format,
                     &skinned_vs::load(device.clone())?,
-                    &pbr_fs::load(device.clone())?,
-                    //&viz_fs::load(device.clone())?, // Test FIXME
+                    &frag_shader,
                 ),
-                /* FIXME Visualize could be skinned or not
-                Style::Visualize => build_vk_pipeline::<SkinnedFormat>(
-                    device.clone(),
-                    render_format,
-                    &skinned_vs::load(device.clone())?,
-                    &viz_fs::load(device.clone())?,
-                ),*/
             }
         }?;
 
@@ -233,7 +235,7 @@ mod skinned_vs {
 
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/pbr.vert.glsl",
+        path: "shaders/skinned.vert.glsl",
         define: [("MAX_JOINTS", "32")],
     }
 }

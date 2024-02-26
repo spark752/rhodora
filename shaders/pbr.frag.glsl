@@ -17,14 +17,16 @@
     #define SHOW_ROUGHNESS 2    // Overrides lighting
     #define SHOW_METALNESS 3    // Overrides lighting
     #define SHOW_MIPMAP 4       // Overrides lighting
+    #define SHOW_DEPTH 5        // Overrides lighting
 
     // TODO: Move these to push constants
     uint ambient_mode = USE_AMBIENT;
     uint specular_mode = USE_SPECULAR;
-    uint override_mode = SHOW_MIPMAP;
+    uint override_mode = SHOW_DEPTH;
 #endif
 
-// Inputs from vertex shaders
+// Inputs from vertex shaders. Trying to pass these as a struct or block in
+// vulkano 0.33 causes the shader macro to panic.
 layout(location = 0) in vec3 f_normal;
 layout(location = 1) in vec3 f_position;
 layout(location = 2) in vec2 f_tex_coord;
@@ -82,9 +84,10 @@ void main() {
     float roughness = clamp(material.roughness, 0.1, 1.0);
     float metalness = clamp(material.metalness, 0.0, 1.0);
 
+    // Calculate pre-multiply alpha
     vec4 colour_tex = texture(tex, f_tex_coord);
     float alpha = colour_tex.a;
-    vec3 albedo = colour_tex.rgb * material.diffuse.rgb;
+    vec3 albedo = colour_tex.rgb * material.diffuse.rgb * colour_tex.a;
 
     // Use a standard value for reflectance for non-metals. Else use the albedo
     // value.
@@ -147,6 +150,16 @@ void main() {
 
     // Overrides
     #ifdef VISUALIZE
+        vec3 rainbow[8] = {
+            vec3(1.0, 0.0, 0.0), // R
+            vec3(1.0, 0.5, 0.0), // O
+            vec3(1.0, 1.0, 0.0), // Y
+            vec3(0.0, 1.0, 0.0), // G
+            vec3(0.0, 0.0, 1.0), // B
+            vec3(0.3, 0.0, 0.5), // I
+            vec3(1.0, 0.0, 1.0), // V
+            vec3(0.0, 0.0, 0.0)  // K
+        };
         switch (override_mode) {
             case SHOW_NORMALS:
                 shade = vec3((f_normal + 1.0) * 0.5);
@@ -159,17 +172,15 @@ void main() {
                 break;
             case SHOW_MIPMAP:
                 int mml = clamp(int(textureQueryLod(tex, f_tex_coord).x), 0, 7);
-                vec3 table[8] = {
-                    vec3(1.0, 0.0, 0.0), // R
-                    vec3(1.0, 0.5, 0.0), // O
-                    vec3(1.0, 1.0, 0.0), // Y
-                    vec3(0.0, 1.0, 0.0), // G
-                    vec3(0.0, 0.0, 1.0), // B
-                    vec3(0.3, 0.0, 0.5), // I
-                    vec3(1.0, 0.0, 1.0), // V
-                    vec3(0.0, 0.0, 0.0)  // K
-                };
-                shade = table[mml];
+                shade = rainbow[mml];
+                break;
+            case SHOW_DEPTH:
+                const float NEAR = 0.2; // Default near plane
+                const float FAR = 100.0; // Default far plane
+                float depth = (NEAR * FAR /
+                    (FAR + gl_FragCoord.z * (NEAR - FAR))) / FAR; // Linearized
+                shade = vec3(depth);
+                break;
             default:
                 break;
         }

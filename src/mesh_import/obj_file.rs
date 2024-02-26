@@ -1,7 +1,7 @@
 use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
-use log::{info, warn};
+use log::{error, info};
 
 /// Load a Wavefront OBJ format object from an .obj file. Loads the file into
 /// memory and calls `process_obj`. You may call that directly if you've loaded
@@ -30,7 +30,7 @@ pub fn process_obj(
     vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let (tobj_models, tobj_materials) = load_result?;
-    info!("Found {} Models", tobj_models.len());
+    info!("Found {} submeshes", tobj_models.len());
 
     let scale = file.scale;
     let swizzle = file.swizzle;
@@ -44,12 +44,17 @@ pub fn process_obj(
     for m in &tobj_models {
         let mesh = &m.mesh;
         if mesh.positions.len() != mesh.normals.len() {
-            warn!("Mesh has no normals");
+            error!("Submesh has no normals");
             return Err(RhError::UnsupportedFormat);
         }
         let pos_count = mesh.positions.len() / 3;
         let idx_count = mesh.indices.len();
         let has_uv = !mesh.texcoords.is_empty();
+        info!(
+            "Submesh vertices={}, triangles={}",
+            pos_count,
+            idx_count / 3
+        );
 
         // Convert normals to Z axis up if needed and interleave. This file
         // format does not support skinning.

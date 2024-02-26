@@ -101,6 +101,8 @@ impl Camera {
     }
 
     fn build_proj(aspect_ratio: f32, fovy: f32) -> glm::Mat4 {
+        // Use left hand with zero to one depth because that seems to work
+        // for Vulkan
         glm::perspective_lh_zo(
             aspect_ratio,
             fovy,

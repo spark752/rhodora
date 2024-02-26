@@ -8,18 +8,15 @@ layout(location = 2) in vec2 tex_coord;
 layout(location = 3) in uint joint_ids;
 layout(location = 4) in vec4 weights;
 
-// Outputs to fragment shader
+// Outputs to fragment shader. Trying to pass these as a struct or block in
+// vulkano 0.33 causes the shader macro to panic.
 layout(location = 0) out vec3 f_normal;
 layout(location = 1) out vec3 f_position;
 layout(location = 2) out vec2 f_tex_coord;
 
-// Uniform buffer definition shared with fragment shader
+// Uniform buffer definition shared with fragment shader in set 0
 #include "vpl.glsl"
 
-// norm_view is the matrix for converting normals to view space which could be
-// a mat3, but a mat3 pads each column (making it the same size as a mat3x4)
-// and there is no built in conversion from glm matrices to the rust arrays
-// created for either mat3 or mat3x4.
 layout(set = 1, binding = 0) uniform M {
     mat4 model_view;
     mat2x4 joints[MAX_JOINTS];
