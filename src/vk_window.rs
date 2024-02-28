@@ -3,7 +3,7 @@ use log::info;
 use std::sync::Arc;
 use vulkano::{
     device::{
-        physical::{PhysicalDevice, PhysicalDeviceError, PhysicalDeviceType},
+        physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, Features, Queue,
         QueueCreateInfo, QueueFlags,
     },
@@ -11,16 +11,16 @@ use vulkano::{
     instance::{
         debug::{
             DebugUtilsMessageSeverity, DebugUtilsMessageType,
-            DebugUtilsMessenger, DebugUtilsMessengerCreateInfo,
+            DebugUtilsMessenger, DebugUtilsMessengerCallback,
+            DebugUtilsMessengerCreateInfo,
         },
         Instance, InstanceCreateInfo, InstanceExtensions,
     },
     swapchain::{Surface, SurfaceCapabilities, SurfaceInfo},
-    VulkanLibrary,
+    Validated, VulkanError, VulkanLibrary,
 };
-use vulkano_win::VkSurfaceBuild; // build_vk_surface impl
 use winit::window::Window as WinitWindow;
-use winit::window::WindowBuilder as WinitWindowBuilder;
+use winit::window::WindowBuilder;
 use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event_loop::EventLoop,
@@ -61,9 +61,12 @@ impl VkWindow {
             |wp| wp,
         );
         let library = VulkanLibrary::new()?;
+
+        // vulkano 0.34 deprecates `vulkano_win` which was getting the required
+        // extensions and gets them from `Surface` instead.
         let required_extensions = InstanceExtensions {
             ext_debug_utils: debug_layers,
-            ..vulkano_win::required_extensions(&library)
+            ..Surface::required_extensions(event_loop)
         };
         let instance = Instance::new(
             library,
@@ -71,47 +74,47 @@ impl VkWindow {
                 enabled_extensions: required_extensions,
                 ..Default::default()
             },
-        )?;
-        let _debug_callback =
-            // Interface for Vulkan validation layers.
-            // DebugUtilsMessenger is unsafe so this block is required to be
-            // unsafe.
-            unsafe {
-                DebugUtilsMessenger::new(
-                    instance.clone(),
-                    DebugUtilsMessengerCreateInfo {
-                        message_severity: DebugUtilsMessageSeverity::ERROR
-                            | DebugUtilsMessageSeverity::WARNING
-                            | DebugUtilsMessageSeverity::INFO
-                            | DebugUtilsMessageSeverity::VERBOSE,
-                        message_type: DebugUtilsMessageType::GENERAL
-                            | DebugUtilsMessageType::VALIDATION
-                            | DebugUtilsMessageType::PERFORMANCE,
-                        ..DebugUtilsMessengerCreateInfo::user_callback(
-                            Arc::new(|msg| {
-                                let severity = if msg.severity.intersects(
+        )
+        .map_err(Validated::unwrap)?;
+
+        // Interface for Vulkan validation layers.
+        // DebugUtilsMessenger is unsafe so this block is required to be
+        // unsafe.
+        let _debug_callback = unsafe {
+            DebugUtilsMessenger::new(
+                instance.clone(),
+                DebugUtilsMessengerCreateInfo {
+                    message_severity: DebugUtilsMessageSeverity::ERROR
+                        | DebugUtilsMessageSeverity::WARNING
+                        | DebugUtilsMessageSeverity::INFO
+                        | DebugUtilsMessageSeverity::VERBOSE,
+                    message_type: DebugUtilsMessageType::GENERAL
+                        | DebugUtilsMessageType::VALIDATION
+                        | DebugUtilsMessageType::PERFORMANCE,
+                    ..DebugUtilsMessengerCreateInfo::user_callback(
+                        DebugUtilsMessengerCallback::new(
+                            |msg_severity, msg_type, callback_data| {
+                                let severity = if msg_severity.intersects(
                                     DebugUtilsMessageSeverity::ERROR,
                                 ) {
                                     "error"
-                                } else if msg.severity.intersects(
+                                } else if msg_severity.intersects(
                                     DebugUtilsMessageSeverity::WARNING,
                                 ) {
                                     "warning"
-                                } else if msg
-                                    .severity
+                                } else if msg_severity
                                     .intersects(DebugUtilsMessageSeverity::INFO)
                                 {
                                     "information"
-                                } else  {
+                                } else {
                                     "verbose"
                                 };
 
-                                let ty = if msg
-                                    .ty
+                                let ty = if msg_type
                                     .intersects(DebugUtilsMessageType::GENERAL)
                                 {
                                     "general"
-                                } else if msg.ty.intersects(
+                                } else if msg_type.intersects(
                                     DebugUtilsMessageType::VALIDATION,
                                 ) {
                                     "validation"
@@ -119,27 +122,44 @@ impl VkWindow {
                                     "performance"
                                 };
 
-                                println!(
+                                // The layers will mostly report "info" type
+                                // messages so the `info!` macro seems like a
+                                // reasonable choice
+                                info!(
                                     "{} {} {}: {}",
-                                    msg.layer_prefix.unwrap_or("unknown"),
+                                    callback_data
+                                        .message_id_name
+                                        .unwrap_or("unknown"),
                                     ty,
                                     severity,
-                                    msg.description
+                                    callback_data.message
                                 );
-                            }),
-                        )
-                    },
-                )
-                .ok()
-            };
+                            },
+                        ),
+                    )
+                },
+            )
+            .ok()
+        }; // unsafe block
+
         let size = LogicalSize::new(
             f64::from(properties.dimensions[0]),
             f64::from(properties.dimensions[1]),
         );
-        let surface = WinitWindowBuilder::new()
-            .with_title(properties.title)
-            .with_inner_size(size)
-            .build_vk_surface(event_loop, instance.clone())?;
+
+        // Previously there was no actual thing called `window` just a
+        // surface created with `build_vk_surface`. But that was deprecated
+        // in vulkano 0.34 so now there is this. The `window` gets passed to
+        // create the `surface` but is not currently stored elsewhere.
+        let window = Arc::new(
+            WindowBuilder::new()
+                .with_title(properties.title)
+                .with_inner_size(size)
+                .build(event_loop)?,
+        );
+        let surface = Surface::from_window(instance.clone(), window)
+            .map_err(Validated::unwrap)?;
+
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
             ..DeviceExtensions::empty()
@@ -188,7 +208,8 @@ impl VkWindow {
                 }],
                 ..Default::default()
             },
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
         info!("Using Vulkan version : {}", device.api_version());
         let graphics_queue = queues.next().ok_or(RhError::QueueNotFound)?;
 
@@ -230,18 +251,18 @@ impl VkWindow {
     /// May return `RhError`
     pub fn surface_caps(
         &self,
-    ) -> Result<SurfaceCapabilities, PhysicalDeviceError> {
+    ) -> Result<SurfaceCapabilities, Validated<VulkanError>> {
         self.physical
             .surface_capabilities(&self.surface, SurfaceInfo::default())
     }
 
-    /// # Errors
-    /// May return `RhError`
-    pub fn format_properties(
-        &self,
-        format: Format,
-    ) -> Result<FormatProperties, PhysicalDeviceError> {
-        self.physical.format_properties(format)
+    /// Returns the format properties of this window's physical device
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+    #[must_use]
+    pub fn format_properties(&self, format: Format) -> FormatProperties {
+        self.physical.format_properties(format).unwrap() // Box<ValidationError>
     }
 
     /// # Errors

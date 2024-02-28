@@ -7,34 +7,29 @@ use crate::{
     rh_error::RhError,
     texture::Manager as TextureManager,
     types::{
-        AttachmentView, CameraTrait, DeviceAccess, KeyboardHandler,
-        RenderFormat, SwapchainView, TransferFuture,
+        CameraTrait, DeviceAccess, KeyboardHandler, RenderFormat,
+        TransferFuture,
     },
     util,
     vk_window::{Properties, VkWindow},
 };
-use log::{error, info};
+use log::{error, info, trace};
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
-use vulkano::swapchain::SwapchainAcquireFuture;
 use vulkano::{
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferBeginError,
-        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
-        RenderingAttachmentInfo, RenderingInfo,
+        AutoCommandBufferBuilder, PrimaryAutoCommandBuffer,
+        PrimaryCommandBufferAbstract, RenderingAttachmentInfo, RenderingInfo,
     },
     device::{Device, Queue},
     format::Format,
-    image::view::ImageView,
-    image::{SampleCount, SwapchainImage},
+    image::{view::ImageView, Image, SampleCount},
     pipeline::graphics::viewport::Viewport,
-    render_pass::{LoadOp, StoreOp},
-    swapchain::{
-        AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
-        SwapchainPresentInfo,
-    },
-    sync::{FlushError, GpuFuture},
+    render_pass::{AttachmentLoadOp, AttachmentStoreOp},
+    swapchain::{Swapchain, SwapchainCreateInfo, SwapchainPresentInfo},
+    sync::GpuFuture,
 };
+use vulkano::{swapchain::SwapchainAcquireFuture, Validated, VulkanError};
 use winit::event_loop::ControlFlow;
 use winit::{
     dpi::PhysicalSize, event::Event, event::KeyboardInput, event::WindowEvent,
@@ -102,11 +97,11 @@ pub struct Boss {
     render_format: RenderFormat,
     pub memory: Memory,
     pub swapchain: Arc<Swapchain>,
-    pub swapchain_views: Vec<SwapchainView>,
+    pub swapchain_views: Vec<Arc<ImageView>>,
     pub postprocess: PostProcess,
     pub viewport: Viewport,
-    pub depth_image_view: AttachmentView,
-    msaa_option: Option<AttachmentView>,
+    pub depth_image_view: Arc<ImageView>,
+    msaa_option: Option<Arc<ImageView>>,
     window_resized: bool,
     recreate_swapchain: bool,
     frame_control: FrameControl,
@@ -175,35 +170,37 @@ impl Boss {
         let mut cbb = util::create_primary_cbb(
             &memory.command_buffer_allocator,
             window.graphics_queue(),
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
         let postprocess = PostProcess::new(
             &DeviceAccess {
                 device: window.device().clone(),
                 set_allocator: &memory.set_allocator,
                 cbb: &mut cbb,
             },
-            &memory.memory_allocator,
+            memory.memory_allocator.clone(),
             swapchain.image_extent(),
             colour_format, // output format from main rendering pass
             swapchain.image_format(), // output format from postprocessing
             None,          // sampler option, None = create automatically
         )?;
-        let cb = cbb.build()?;
+        let cb = cbb.build().map_err(Validated::unwrap)?;
         let future = cb
             .execute(window.graphics_queue().clone())?
-            .then_signal_fence_and_flush()?;
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)?;
 
         // Create a dynamic viewport
         let dimensions = window.dimensions()?;
         let viewport = Viewport {
-            origin: [0.0, 0.0],
-            dimensions: dimensions.into(),
-            depth_range: 0.0..1.0, // standard for Vulkan
+            offset: [0.0, 0.0],
+            extent: dimensions.into(),
+            depth_range: 0.0..=1.0, // standard for Vulkan
         };
 
         // Create a depth buffer
         let depth_image_view = util::create_depth(
-            &memory.memory_allocator,
+            memory.memory_allocator.clone(),
             dimensions.into(),
             depth_format,
             sample_count,
@@ -214,7 +211,7 @@ impl Boss {
             None
         } else {
             Some(util::create_msaa(
-                &memory.memory_allocator,
+                memory.memory_allocator.clone(),
                 swapchain.image_extent(),
                 colour_format,
                 sample_count,
@@ -240,7 +237,7 @@ impl Boss {
         // take very long. Probably could return the future and let the caller
         // use it as a condition for a later queue submission, but that adds
         // complexity.
-        future.wait(None)?;
+        future.wait(None).map_err(Validated::unwrap)?;
 
         Ok(Self {
             window,
@@ -266,16 +263,16 @@ impl Boss {
     /// May return `RhError`
     pub fn resize(&mut self) -> Result<(), RhError> {
         let dimensions = self.window.dimensions()?;
-        self.viewport.dimensions = dimensions.into();
+        self.viewport.extent = dimensions.into();
         self.depth_image_view = util::create_depth(
-            &self.memory.memory_allocator,
+            self.memory.memory_allocator.clone(),
             dimensions.into(),
             self.render_format.depth_format,
             self.render_format.sample_count,
         )?;
         if self.msaa_option.is_some() {
             self.msaa_option = Some(util::create_msaa(
-                &self.memory.memory_allocator,
+                self.memory.memory_allocator.clone(),
                 dimensions.into(),
                 self.render_format.colour_format,
                 self.render_format.sample_count,
@@ -295,12 +292,13 @@ impl Boss {
             }) {
                 Ok(r) => r,
                 // Error can happen during resizing, just retry
-                Err(SwapchainCreationError::ImageExtentNotSupported {
-                    ..
-                }) => {
-                    info!("retry for image extent not supported");
-                    return Err(RhError::RetryRecreate);
-                }
+                // FIXME Maybe not anymore?
+                //Err(SwapchainCreationError::ImageExtentNotSupported {
+                //    ..
+                //}) => {
+                //    info!("retry for image extent not supported");
+                //    return Err(RhError::RetryRecreate);
+                //}
                 Err(e) => {
                     error!("Could not recreate swapchain: {e:?}");
                     return Err(RhError::RecreateFailed);
@@ -319,7 +317,7 @@ impl Boss {
         &self,
     ) -> Result<
         AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        CommandBufferBeginError,
+        Validated<VulkanError>,
     > {
         util::create_primary_cbb(
             &self.memory.command_buffer_allocator,
@@ -328,11 +326,14 @@ impl Boss {
     }
 
     fn create_image_views(
-        images: &[Arc<SwapchainImage>],
-    ) -> Result<Vec<SwapchainView>, RhError> {
+        images: &[Arc<Image>],
+    ) -> Result<Vec<Arc<ImageView>>, RhError> {
         let mut ret = Vec::new();
         for image in images {
-            ret.push(ImageView::new_default(image.clone())?);
+            ret.push(
+                ImageView::new_default(image.clone())
+                    .map_err(Validated::unwrap)?,
+            );
         }
         Ok(ret)
     }
@@ -340,19 +341,24 @@ impl Boss {
     #[allow(clippy::type_complexity)]
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Panics if vulkano returns a validation error
     pub fn acquire_next_image(
         &mut self,
     ) -> Result<(u32, SwapchainAcquireFuture), RhError> {
         // The acquire_future will be signaled when the swapchain image is
-        // ready
+        // ready. This may panic.
         let (image_index, suboptimal, acquire_future) =
             match vulkano::swapchain::acquire_next_image(
                 self.swapchain.clone(),
                 None,
-            ) {
+            )
+            .map_err(Validated::unwrap)
+            {
                 Ok(r) => r,
-                Err(AcquireError::OutOfDate) => {
-                    info!("recreate swapchain for out of date");
+                Err(VulkanError::OutOfDate) => {
+                    info!("Recreate swapchain for out of date");
                     self.recreate_swapchain = true;
                     return Err(RhError::SwapchainOutOfDate);
                 }
@@ -383,8 +389,14 @@ impl Boss {
         )
     }
 
+    /// Performs the postprocessing render pass
+    ///
     /// # Errors
     /// May return `RhError`
+    ///
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn render_pass_postprocess<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -392,15 +404,17 @@ impl Boss {
     ) -> Result<(), RhError> {
         cbb.begin_rendering(RenderingInfo {
             color_attachments: vec![Some(RenderingAttachmentInfo {
-                load_op: LoadOp::DontCare,
-                store_op: StoreOp::Store,
+                load_op: AttachmentLoadOp::DontCare,
+                store_op: AttachmentStoreOp::Store,
                 ..RenderingAttachmentInfo::image_view(
                     self.swapchain_views[image_index as usize].clone(),
                 )
             })],
             ..Default::default()
-        })?
-        .set_viewport(0, [self.viewport.clone()]);
+        })
+        .unwrap() // This is a Box<ValidationError>
+        .set_viewport(0, std::iter::once(self.viewport.clone()).collect())
+        .unwrap(); // This is a Box<ValidationError>
         self.postprocess.draw(cbb)
     }
 
@@ -409,6 +423,9 @@ impl Boss {
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn render_main_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -416,36 +433,55 @@ impl Boss {
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
+        //trace!("Getting rendering target attachment");
         let attachment_info = self.attachment_info(background);
+
+        //trace!("Recording 'begin_rendering' to command buffer");
         cbb.begin_rendering(RenderingInfo {
             color_attachments: vec![Some(attachment_info)],
             depth_attachment: Some(RenderingAttachmentInfo {
-                load_op: LoadOp::Clear,
-                store_op: StoreOp::DontCare,
+                load_op: AttachmentLoadOp::Clear,
+                store_op: AttachmentStoreOp::DontCare,
                 clear_value: Some(1f32.into()),
                 ..RenderingAttachmentInfo::image_view(
                     self.depth_image_view.clone(),
                 )
             }),
             ..Default::default()
-        })?;
-        cbb.set_viewport(0, [self.viewport.clone()]);
+        })
+        .unwrap(); // This is a Box<ValidationError>
+
+        //trace!("Setting the viewport");
+        cbb.set_viewport(
+            0, // (line break for easier reading)
+            std::iter::once(self.viewport.clone()).collect(),
+        )
+        .unwrap(); // This is a Box<ValidationError>
+
+        //trace!("Calling ModelManager 'draw_all'");
         self.model_manager.draw_all(
             cbb,
             &self.memory.set_allocator,
             camera,
             lights,
         )?;
+
+        //trace!("Ending the render pass");
         self.render_pass_end(cbb)
     }
 
+    /// Ends a rendering pass
+    ///
     /// # Errors
-    /// May return `RhError`
+    /// Will NOT return `RhError`. This is leftover from earlier code.
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn render_pass_end<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<(), RhError> {
-        cbb.end_rendering()?; // let RhError handle error mapping
+        cbb.end_rendering().unwrap(); // This is a Box<ValidationError>
         Ok(())
     }
 
@@ -483,7 +519,7 @@ impl Boss {
                 self.resize()?;
                 // Recreate target image and descriptor set
                 self.postprocess.resize(
-                    &self.memory.memory_allocator,
+                    self.memory.memory_allocator.clone(),
                     &self.memory.set_allocator,
                     dimensions.into(),
                 )?;
@@ -518,7 +554,7 @@ impl Boss {
         before_future: Box<dyn GpuFuture>,
         image_index: u32,
     ) -> Result<(), RhError> {
-        let command_buffer = cbb.build()?;
+        let command_buffer = cbb.build().map_err(Validated::unwrap)?;
 
         // Wait for GPU fence
         // This akward construction creates a JoinedFuture even if there is
@@ -548,6 +584,9 @@ impl Boss {
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if vulkano returns a validation error
     pub fn present(
         &mut self,
         before_future: Box<dyn GpuFuture>,
@@ -564,12 +603,12 @@ impl Boss {
             .then_signal_fence_and_flush();
 
         // See how it went
-        let new_fence_result = match after_future {
+        let new_fence_result = match after_future.map_err(Validated::unwrap) {
             Ok(future) => Ok(Some(future.boxed())),
-            Err(FlushError::OutOfDate) => {
+            Err(VulkanError::OutOfDate) => {
                 // Happens on resizing
                 self.recreate_swapchain = true;
-                info!("recreate swapchain for flush error");
+                info!("Recreate swapchain for flush error");
                 Ok(Some(self.now_future()))
             }
             Err(e) => {
@@ -603,6 +642,7 @@ impl Boss {
         // Acquire an image from the swapchain to draw. Returns a
         // future that indicates when the image will be available and
         // may block until it knows that.
+        //trace!("Acquiring swapchain image");
         let (image_index, acquire_future) = match self.acquire_next_image() {
             Ok(r) => r,
             Err(RhError::SwapchainOutOfDate) => return Ok(()),
@@ -612,12 +652,15 @@ impl Boss {
         // Create command buffer. For dynamic rendering, begin_rendering
         // and end_rendering are used instead of begin_render_pass and
         // end_render_pass.
-        let mut cbb = self.create_primary_cbb()?;
+        //trace!("Creating command buffer builder");
+        let mut cbb = self.create_primary_cbb().map_err(Validated::unwrap)?;
 
         // First pass into postprocess input texture via MSAA if enabled
+        //trace!("Starting main pass");
         self.render_main_pass(&mut cbb, background, camera, lights)?;
 
         // Second pass postprocess to swapchain image
+        //trace!("Starting postprocess pass");
         self.render_pass_postprocess(&mut cbb, image_index)?;
         self.render_pass_end(&mut cbb)?;
 
@@ -628,6 +671,7 @@ impl Boss {
             .expect("Fence error while waiting for swapchain image");
 
         // Submit command buffer & present swapchain once ready
+        //trace!("Submitting command buffer and presenting swapchain");
         self.submit_and_present(
             cbb,
             //previous_future,
@@ -821,6 +865,7 @@ impl Boss {
         &self,
         cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<TransferFuture, RhError> {
+        trace!("Staring graphics queue transfer");
         util::start_transfer(cbb, self.graphics_queue().clone())
     }
 

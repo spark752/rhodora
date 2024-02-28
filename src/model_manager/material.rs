@@ -1,11 +1,12 @@
-use crate::{rh_error::RhError, types::TextureView};
+use crate::rh_error::RhError;
 use std::sync::Arc;
 use vulkano::{
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, layout::DescriptorSetLayout,
         PersistentDescriptorSet, WriteDescriptorSet,
     },
-    sampler::Sampler,
+    image::{sampler::Sampler, view::ImageView},
+    Validated,
 };
 
 // FIXME find a better place for this
@@ -15,7 +16,7 @@ const DIFFUSE_TEX_BINDING: u32 = 0;
 /// Material with loaded texture not yet in a descriptor set
 #[allow(clippy::module_name_repetitions)]
 pub struct TexMaterial {
-    pub texture: TextureView,
+    pub texture: Arc<ImageView>,
     pub diffuse: [f32; 3], // Multiplier for diffuse
     pub roughness: f32,
     pub metalness: f32,
@@ -49,7 +50,9 @@ pub fn tex_to_pbr(
                 tex_material.texture.clone(),
                 sampler.clone(),
             )],
-        )?,
+            [],
+        )
+        .map_err(Validated::unwrap)?,
         diffuse: tex_material.diffuse,
         roughness: tex_material.roughness,
         metalness: tex_material.metalness,

@@ -1,11 +1,11 @@
 use super::import;
-use crate::{rh_error::RhError, types::TextureView};
+use crate::rh_error::RhError;
 use ahash::AHashMap;
 use log::info;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use vulkano::{
-    command_buffer::AutoCommandBufferBuilder,
+    command_buffer::AutoCommandBufferBuilder, image::view::ImageView,
     memory::allocator::StandardMemoryAllocator,
 };
 
@@ -17,7 +17,7 @@ use vulkano::{
 /// Vulkano and other packages already depend on it.
 pub struct Manager {
     mem_allocator: Arc<StandardMemoryAllocator>,
-    cache: Mutex<AHashMap<String, TextureView>>,
+    cache: Mutex<AHashMap<String, Arc<ImageView>>>,
 }
 
 impl Manager {
@@ -38,7 +38,7 @@ impl Manager {
         &self,
         filename: &str,
         cbb: &mut AutoCommandBufferBuilder<T>,
-    ) -> Result<TextureView, RhError> {
+    ) -> Result<Arc<ImageView>, RhError> {
         // This is a potentially long critical section, but probably only one
         // thread is actually loading anyway and the Mutex is just for safety.
         let mut cache = self.cache.lock();
@@ -49,9 +49,9 @@ impl Manager {
         } else {
             info!("Texture cache miss: {}", filename);
             let texture_view = if filename.is_empty() {
-                import::load_default(&self.mem_allocator, cbb)
+                import::load_default(self.mem_allocator.clone(), cbb)
             } else {
-                import::load(filename, &self.mem_allocator, cbb)
+                import::load(filename, self.mem_allocator.clone(), cbb)
             }?;
             cache.insert(filename.to_string(), texture_view.clone());
             drop(cache); // Probably makes no difference but makes clippy happy

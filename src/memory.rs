@@ -4,7 +4,10 @@ use vulkano::{
         StandardCommandBufferAllocator,
         StandardCommandBufferAllocatorCreateInfo,
     },
-    descriptor_set::allocator::StandardDescriptorSetAllocator,
+    descriptor_set::allocator::{
+        StandardDescriptorSetAllocator,
+        StandardDescriptorSetAllocatorCreateInfo,
+    },
     device::Device,
     memory::allocator::StandardMemoryAllocator,
 };
@@ -42,6 +45,7 @@ impl Memory {
             )),
             set_allocator: Arc::new(StandardDescriptorSetAllocator::new(
                 device.clone(),
+                StandardDescriptorSetAllocatorCreateInfo::default(),
             )),
             command_buffer_allocator: Arc::new(
                 StandardCommandBufferAllocator::new(

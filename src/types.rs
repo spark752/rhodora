@@ -4,14 +4,11 @@ use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferExecFuture},
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::Device,
-    image::{view::ImageView, AttachmentImage, ImmutableImage, SwapchainImage},
     sync::future::{FenceSignalFuture, NowFuture},
 };
 use winit::event::{ElementState, VirtualKeyCode};
 
-pub type TextureView = Arc<ImageView<ImmutableImage>>;
-pub type AttachmentView = Arc<ImageView<AttachmentImage>>;
-pub type SwapchainView = Arc<ImageView<SwapchainImage>>;
+/// For waiting on GPU transfers
 pub type TransferFuture = FenceSignalFuture<CommandBufferExecFuture<NowFuture>>;
 
 #[derive(Clone, Copy, Debug)]

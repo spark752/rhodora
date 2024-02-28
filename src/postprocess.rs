@@ -12,19 +12,27 @@ use vulkano::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet,
         WriteDescriptorSet,
     },
+    image::sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo},
     image::view::ImageView,
-    image::AttachmentImage,
-    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryUsage},
+    memory::allocator::{
+        AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter,
+    },
     pipeline::{
         graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
             input_assembly::{InputAssemblyState, PrimitiveTopology},
-            render_pass::PipelineRenderingCreateInfo,
-            vertex_input::Vertex,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineRenderingCreateInfo,
+            vertex_input::{Vertex, VertexDefinition},
             viewport::ViewportState,
+            GraphicsPipelineCreateInfo,
         },
-        GraphicsPipeline, Pipeline, PipelineBindPoint,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint,
+        PipelineLayout, PipelineShaderStageCreateInfo,
     },
-    sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo},
+    Validated,
 };
 
 // Create vertex format struct
@@ -55,7 +63,7 @@ pub struct PostProcess {
     vertex_buffer: Subbuffer<[QVertex]>,
     pipeline: Arc<GraphicsPipeline>,
     sampler: Arc<Sampler>,
-    image_view: Arc<ImageView<AttachmentImage>>,
+    image_view: Arc<ImageView>,
     descriptor_set: Arc<PersistentDescriptorSet>,
     input_format: vulkano::format::Format,
 }
@@ -65,67 +73,99 @@ impl PostProcess {
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+    #[allow(clippy::too_many_lines)]
     pub fn new<T>(
         device_access: &DeviceAccess<T>,
-        mem_allocator: &(impl MemoryAllocator + ?Sized),
+        mem_allocator: Arc<dyn MemoryAllocator>,
         dimensions: [u32; 2],
         input_format: vulkano::format::Format,
         output_format: vulkano::format::Format,
         sampler_option: Option<Arc<Sampler>>,
     ) -> Result<Self, RhError> {
-        // FIXME This was a DeviceLocalBuffer but the convenience functions
-        // for this no longer exist in Vulkano. Temporarily use a different
-        // type.
-        /*
-        let vertex_buffer = DeviceLocalBuffer::from_iter(
-            mem_allocator,
-            QUAD,
-            BufferUsage::VERTEX_BUFFER | BufferUsage::TRANSFER_DST,
-            device_access.cbb,
-        )?;
-         */
+        // FIXME Check if these vertices end up in reasonable memory without
+        // queing commands. Even better, generate them in shaders.
         let vertex_buffer = Buffer::from_iter(
-            mem_allocator,
+            mem_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             QUAD,
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
 
-        let vs_quad = vs_quad::load(device_access.device.clone())?;
-        let fs_quad = fs_quad::load(device_access.device.clone())?;
-        let pipeline =
-            GraphicsPipeline::start()
-                .render_pass(PipelineRenderingCreateInfo {
-                    color_attachment_formats: vec![Some(output_format)],
-                    ..Default::default()
-                })
-                .vertex_input_state(QVertex::per_vertex())
-                .input_assembly_state(
-                    InputAssemblyState::new()
-                        .topology(PrimitiveTopology::TriangleStrip),
-                )
-                .vertex_shader(
-                    vs_quad
-                        .entry_point("main")
-                        .ok_or(RhError::VertexShaderError)?,
-                    (),
-                )
-                .viewport_state(
-                    ViewportState::viewport_dynamic_scissor_irrelevant(),
-                )
-                .fragment_shader(
-                    fs_quad
-                        .entry_point("main")
-                        .ok_or(RhError::FragmentShaderError)?,
-                    (),
-                )
-                .build(device_access.device.clone())?;
+        let pipeline = {
+            let vs = vs_quad::load(device_access.device.clone())
+                .map_err(Validated::unwrap)?
+                .entry_point("main")
+                .ok_or(RhError::VertexShaderError)?;
+            let fs = fs_quad::load(device_access.device.clone())
+                .map_err(Validated::unwrap)?
+                .entry_point("main")
+                .ok_or(RhError::FragmentShaderError)?;
+
+            let vertex_input_state = QVertex::per_vertex()
+                .definition(&vs.info().input_interface)
+                .unwrap(); // `Box<ValidationError>`
+
+            let stages = [
+                PipelineShaderStageCreateInfo::new(vs),
+                PipelineShaderStageCreateInfo::new(fs),
+            ];
+
+            let layout = PipelineLayout::new(
+                device_access.device.clone(),
+                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                    .into_pipeline_layout_create_info(
+                        device_access.device.clone(),
+                    )?,
+            )
+            .map_err(Validated::unwrap)?;
+
+            let subpass = PipelineRenderingCreateInfo {
+                color_attachment_formats: vec![Some(output_format)],
+                ..PipelineRenderingCreateInfo::default()
+            };
+
+            GraphicsPipeline::new(
+                device_access.device.clone(),
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: stages.into_iter().collect(),
+                    vertex_input_state: Some(vertex_input_state),
+                    input_assembly_state: Some(InputAssemblyState {
+                        topology: PrimitiveTopology::TriangleStrip,
+                        ..InputAssemblyState::default()
+                    }),
+                    viewport_state: Some(ViewportState::default()),
+                    rasterization_state: Some(RasterizationState::default()),
+                    multisample_state: Some(MultisampleState::default()),
+                    color_blend_state: Some(
+                        ColorBlendState::with_attachment_states(
+                            u32::try_from(
+                                subpass.color_attachment_formats.len(),
+                            )
+                            .unwrap(),
+                            ColorBlendAttachmentState::default(),
+                        ),
+                    ),
+                    dynamic_state: std::iter::once(DynamicState::Viewport)
+                        .collect(),
+                    subpass: Some(subpass.into()),
+                    ..GraphicsPipelineCreateInfo::layout(layout)
+                },
+            )
+            .map_err(Validated::unwrap)?
+        };
+
         let sampler = if let Some(s) = sampler_option {
             s
         } else {
@@ -137,7 +177,8 @@ impl PostProcess {
                     address_mode: [SamplerAddressMode::Repeat; 3],
                     ..Default::default()
                 },
-            )?
+            )
+            .map_err(Validated::unwrap)?
         };
         let (image_view, descriptor_set) = Self::create_target(
             mem_allocator,
@@ -169,7 +210,7 @@ impl PostProcess {
     }
 
     #[must_use]
-    pub fn image_view(&self) -> Arc<ImageView<AttachmentImage>> {
+    pub fn image_view(&self) -> Arc<ImageView> {
         self.image_view.clone()
     }
 
@@ -182,7 +223,7 @@ impl PostProcess {
     /// May return `RhError`
     pub fn resize(
         &mut self,
-        mem_allocator: &(impl MemoryAllocator + ?Sized),
+        mem_allocator: Arc<dyn MemoryAllocator>,
         set_allocator: &StandardDescriptorSetAllocator,
         dimensions: [u32; 2],
     ) -> Result<(), RhError> {
@@ -197,45 +238,49 @@ impl PostProcess {
         Ok(())
     }
 
+    /// The draw command for the postprocess pass
+    ///
     /// # Errors
-    /// May return `RhError`
+    /// Currently will NOT return an `RhError`. The return type is leftover
+    /// from use with an earlier version of vulkano.
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn draw<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<(), RhError> {
         // CommandBufferBuilder should have a render pass started
         cbb.bind_pipeline_graphics(self.pipeline.clone())
+            .unwrap() // `Box<ValidationError>`
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.pipeline.layout().clone(),
                 0, // first_set
                 self.descriptor_set.clone(),
             )
+            .unwrap() // `Box<ValidationError>`
             .bind_vertex_buffers(0, self.vertex_buffer.clone())
+            .unwrap() // `Box<ValidationError>`
             .draw(
                 4, // vertex_count
                 1, // instance_count
                 0, // first_vertex
                 0, // first_instance
-            )?;
+            )
+            .unwrap(); // `Box<ValidationError>`
         Ok(())
     }
 
     // Private helpers
     fn create_target(
-        mem_allocator: &(impl MemoryAllocator + ?Sized),
+        mem_allocator: Arc<dyn MemoryAllocator>,
         set_allocator: &StandardDescriptorSetAllocator,
         dimensions: [u32; 2],
         format: vulkano::format::Format,
         pipeline: &Arc<GraphicsPipeline>,
         sampler: Arc<Sampler>,
-    ) -> Result<
-        (
-            Arc<ImageView<AttachmentImage>>,
-            Arc<PersistentDescriptorSet>,
-        ),
-        RhError,
-    > {
+    ) -> Result<(Arc<ImageView>, Arc<PersistentDescriptorSet>), RhError> {
         let target_image_view =
             util::create_target(mem_allocator, dimensions, format)?;
         let descriptor_set = PersistentDescriptorSet::new(
@@ -246,7 +291,9 @@ impl PostProcess {
                 target_image_view.clone(),
                 sampler,
             )],
-        )?;
+            [],
+        )
+        .map_err(Validated::unwrap)?;
 
         Ok((target_image_view, descriptor_set))
     }

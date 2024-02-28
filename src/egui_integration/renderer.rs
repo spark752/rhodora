@@ -36,33 +36,36 @@ use vulkano::{
         allocator::StandardDescriptorSetAllocator, layout::DescriptorSetLayout,
         PersistentDescriptorSet, WriteDescriptorSet,
     },
-    device::Queue,
-    format::{Format, NumericType},
-    image::{
-        view::ImageView, ImageAccess, ImageCreateFlags, ImageLayout,
-        ImageUsage, ImageViewAbstract, ImmutableImage, SampleCount,
-    },
-    memory::allocator::{
-        AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator,
-    },
-    pipeline::{
-        graphics::{
-            color_blend::{AttachmentBlend, BlendFactor, ColorBlendState},
-            input_assembly::InputAssemblyState,
-            multisample::MultisampleState,
-            rasterization::{CullMode as CullModeEnum, RasterizationState},
-            render_pass::PipelineRenderingCreateInfo,
-            vertex_input::Vertex,
-            viewport::{Scissor, Viewport, ViewportState},
-        },
-        GraphicsPipeline, Pipeline, PipelineBindPoint,
-    },
-    sampler::{
+    device::{Device, Queue},
+    format::{Format, NumericFormat},
+    image::sampler::{
         Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
         SamplerMipmapMode,
     },
+    image::{view::ImageView, Image, ImageCreateInfo, ImageLayout, ImageUsage},
+    memory::allocator::{
+        AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+    },
+    pipeline::{
+        graphics::{
+            color_blend::{
+                AttachmentBlend, BlendFactor, BlendOp,
+                ColorBlendAttachmentState, ColorBlendState, ColorComponents,
+            },
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineRenderingCreateInfo,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Scissor, Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint,
+        PipelineLayout, PipelineShaderStageCreateInfo,
+    },
     sync::GpuFuture,
-    DeviceSize,
+    DeviceSize, Validated,
 };
 
 const VERTICES_PER_QUAD: DeviceSize = 4;
@@ -95,10 +98,7 @@ pub struct Renderer {
     pipeline: Arc<GraphicsPipeline>,
 
     texture_desc_sets: AHashMap<egui::TextureId, Arc<PersistentDescriptorSet>>,
-    texture_images: AHashMap<
-        egui::TextureId,
-        Arc<dyn ImageViewAbstract + Send + Sync + 'static>,
-    >,
+    texture_images: AHashMap<egui::TextureId, Arc<ImageView>>,
     next_native_tex_id: u64,
 }
 
@@ -107,12 +107,12 @@ impl Renderer {
     /// May return `RhError`
     pub fn new(gfx_queue: Arc<Queue>, format: Format) -> Result<Self, RhError> {
         let need_srgb_conv = format
-            .type_color()
-            .map_or(false, |t| t == NumericType::UNORM);
+            .numeric_format_color()
+            .map_or(false, |t| t == NumericFormat::UNORM);
         let memory = Memory::new(gfx_queue.device());
         let (vertex_buffer_pool, index_buffer_pool) =
-            Self::create_buffers(&memory.memory_allocator);
-        let pipeline = Self::create_pipeline(&gfx_queue, format)?;
+            create_buffers(&memory.memory_allocator)?;
+        let pipeline = create_pipeline(gfx_queue.device().clone(), format)?;
         let sampler = Sampler::new(
             gfx_queue.device().clone(),
             SamplerCreateInfo {
@@ -122,7 +122,8 @@ impl Renderer {
                 mipmap_mode: SamplerMipmapMode::Linear,
                 ..Default::default()
             },
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
         Ok(Self {
             gfx_queue,
             format,
@@ -138,113 +139,49 @@ impl Renderer {
         })
     }
 
-    fn create_buffers(
-        allocator: &Arc<StandardMemoryAllocator>,
-    ) -> (SubbufferAllocator, SubbufferAllocator) {
-        // Create vertex and index buffers
-        let vertex_buffer_pool = SubbufferAllocator::new(
-            allocator.clone(),
-            SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-        );
-        vertex_buffer_pool
-            .reserve(VERTEX_BUFFER_SIZE)
-            .expect("Failed to reserve vertex buffer memory");
-        let index_buffer_pool = SubbufferAllocator::new(
-            allocator.clone(),
-            SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::INDEX_BUFFER,
-                ..Default::default()
-            },
-        );
-        index_buffer_pool
-            .reserve(INDEX_BUFFER_SIZE)
-            .expect("Failed to reserve index buffer memory");
-
-        (vertex_buffer_pool, index_buffer_pool)
-    }
-
-    fn create_pipeline(
-        gfx_queue: &Arc<Queue>,
-        format: vulkano::format::Format,
-    ) -> Result<Arc<GraphicsPipeline>, RhError> {
-        let vs = vs::load(gfx_queue.device().clone())
-            .expect("failed to create shader module");
-        let fs = fs::load(gfx_queue.device().clone())
-            .expect("failed to create shader module");
-
-        let mut blend = AttachmentBlend::alpha();
-        blend.color_source = BlendFactor::One;
-        blend.alpha_source = BlendFactor::OneMinusDstAlpha;
-        blend.alpha_destination = BlendFactor::One;
-        let blend_state = ColorBlendState::new(1).blend(blend);
-
-        Ok(GraphicsPipeline::start()
-            .render_pass(PipelineRenderingCreateInfo {
-                color_attachment_formats: vec![Some(format)],
-                ..Default::default()
-            })
-            .vertex_input_state(EguiVertex::per_vertex())
-            .vertex_shader(
-                vs.entry_point("main").ok_or(RhError::VertexShaderError)?,
-                (),
-            )
-            .input_assembly_state(InputAssemblyState::new())
-            .fragment_shader(
-                fs.entry_point("main").ok_or(RhError::VertexShaderError)?,
-                (),
-            )
-            .viewport_state(ViewportState::viewport_dynamic_scissor_dynamic(1))
-            .color_blend_state(blend_state)
-            .rasterization_state(
-                RasterizationState::new().cull_mode(CullModeEnum::None),
-            )
-            .multisample_state(MultisampleState {
-                rasterization_samples: SampleCount::Sample1,
-                ..Default::default()
-            })
-            .build(gfx_queue.device().clone())?)
-    }
-
-    /// Creates a descriptor set for images
+    /// Creates a descriptor set for images from an `ImageView`
     fn sampled_image_desc_set(
         &self,
         layout: &Arc<DescriptorSetLayout>,
-        image: Arc<dyn ImageViewAbstract + 'static>,
+        image_view: Arc<ImageView>,
     ) -> Result<Arc<PersistentDescriptorSet>, RhError> {
         Ok(PersistentDescriptorSet::new(
             &self.memory.set_allocator,
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
-                image,
+                image_view,
                 self.sampler.clone(),
             )],
-        )?)
+            [],
+        )
+        .map_err(Validated::unwrap)?)
     }
 
     /// Registers a user texture. User texture needs to be unregistered when
     /// it is no longer needed.
     ///
+    /// This takes an `Image` and creates and stores an `ImageView`.
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn register_image(
         &mut self,
-        image: Arc<dyn ImageViewAbstract + Send + Sync>,
+        image: Arc<Image>,
     ) -> Result<egui::TextureId, RhError> {
+        let image_view =
+            ImageView::new_default(image).map_err(Validated::unwrap)?;
         let layout = self
             .pipeline
             .layout()
             .set_layouts()
             .first()
             .ok_or(RhError::PipelineError);
-        let desc_set = self.sampled_image_desc_set(layout?, image.clone());
+        let desc_set = self.sampled_image_desc_set(layout?, image_view.clone());
         let id = egui::TextureId::User(self.next_native_tex_id);
         self.next_native_tex_id += 1;
         self.texture_desc_sets.insert(id, desc_set?);
-        self.texture_images.insert(id, image);
+        self.texture_images.insert(id, image_view);
         Ok(id)
     }
 
@@ -279,59 +216,69 @@ impl Renderer {
                 .flat_map(|color| color.to_array())
                 .collect(),
         };
-        // Create buffer to be copied to the image
-        let texture_data_buffer = Buffer::from_iter(
-            &self.memory.memory_allocator,
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
-                ..Default::default()
-            },
-            data,
-        )?;
-        // Create image
-        let (img, init) = ImmutableImage::uninitialized(
-            &self.memory.memory_allocator,
-            vulkano::image::ImageDimensions::Dim2d {
-                width: delta.image.width() as u32,
-                height: delta.image.height() as u32,
-                array_layers: 1,
-            },
-            Format::R8G8B8A8_SRGB,
-            vulkano::image::MipmapsCount::One,
-            ImageUsage::TRANSFER_DST
-                | ImageUsage::TRANSFER_SRC
-                | ImageUsage::SAMPLED,
-            ImageCreateFlags::default(),
-            ImageLayout::ShaderReadOnlyOptimal,
-            Some(self.gfx_queue.queue_family_index()),
-        )?;
-        let font_image = ImageView::new_default(img)?;
 
         // Create command buffer builder
         let mut cbb = AutoCommandBufferBuilder::primary(
             &self.memory.command_buffer_allocator,
             self.gfx_queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
 
-        // Copy buffer to image
+        // Create buffer to be copied to the image
+        let texture_data_buffer = Buffer::from_iter(
+            self.memory.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                // FIXME Guessing at these values
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data,
+        )
+        .map_err(Validated::unwrap)?;
+
+        // Create image
+        let image = {
+            let extent =
+                [delta.image.width() as u32, delta.image.height() as u32, 1];
+            Image::new(
+                self.memory.memory_allocator.clone(),
+                ImageCreateInfo {
+                    format: Format::R8G8B8A8_SRGB,
+                    extent,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                    ..Default::default()
+                },
+                AllocationCreateInfo::default(),
+            )
+            .map_err(Validated::unwrap)?
+        };
+
+        // Create commands to copy buffer to image
         cbb.copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
             texture_data_buffer,
-            init,
-        ))?;
+            image.clone(),
+        ))
+        .unwrap(); // This is a Box<ValidationError>
 
-        // Blit texture data to existing image if delta pos exists (e.g. font changed)
+        // Create a image view of the image
+        let image_view =
+            ImageView::new_default(image).map_err(Validated::unwrap)?;
+
+        // Blit texture data to existing image if delta pos exists
+        // (e.g. font changed)
         if let Some(pos) = delta.pos {
             if let Some(existing_image) = self.texture_images.get(&texture_id) {
-                let src_dims = font_image.image().dimensions();
+                let src_dims = image_view.image().extent();
                 let top_left = [pos[0] as u32, pos[1] as u32, 0];
                 let bottom_right = [
-                    pos[0] as u32 + src_dims.width(),
-                    pos[1] as u32 + src_dims.height(),
+                    pos[0] as u32 + src_dims[0],
+                    pos[1] as u32 + src_dims[1],
                     1,
                 ];
 
@@ -339,13 +286,10 @@ impl Renderer {
                     src_image_layout: ImageLayout::General,
                     dst_image_layout: ImageLayout::General,
                     regions: [ImageBlit {
-                        src_subresource: font_image
+                        src_subresource: image_view
                             .image()
                             .subresource_layers(),
-                        src_offsets: [
-                            [0, 0, 0],
-                            [src_dims.width(), src_dims.height(), 1],
-                        ],
+                        src_offsets: [[0, 0, 0], [src_dims[0], src_dims[1], 1]],
                         dst_subresource: existing_image
                             .image()
                             .subresource_layers(),
@@ -355,10 +299,11 @@ impl Renderer {
                     .into(),
                     filter: Filter::Nearest,
                     ..BlitImageInfo::images(
-                        font_image.image().clone(),
-                        existing_image.image(),
+                        image_view.image().clone(),
+                        existing_image.image().clone(),
                     )
-                })?;
+                })
+                .unwrap(); // This is a `Box<ValidationError>`
             }
             // Otherwise save the newly created image
         } else {
@@ -369,14 +314,17 @@ impl Renderer {
                 .first()
                 .ok_or(RhError::PipelineError);
             let font_desc_set =
-                self.sampled_image_desc_set(layout?, font_image.clone());
+                self.sampled_image_desc_set(layout?, image_view.clone());
             self.texture_desc_sets.insert(texture_id, font_desc_set?);
-            self.texture_images.insert(texture_id, font_image);
+            self.texture_images.insert(texture_id, image_view);
         }
+
         // Execute command buffer
-        let command_buffer = cbb.build()?;
+        let command_buffer = cbb.build().map_err(Validated::unwrap)?;
         let finished = command_buffer.execute(self.gfx_queue.clone())?;
-        let _fut = finished.then_signal_fence_and_flush()?;
+        let _fut = finished
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)?;
         Ok(())
     }
 
@@ -436,6 +384,8 @@ impl Renderer {
         Ok(())
     }
 
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     fn draw_egui<T>(
         &mut self,
         scale_factor: f32,
@@ -443,6 +393,7 @@ impl Renderer {
         dimensions: [u32; 2],
         builder: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<(), RhError> {
+        let extent = [dimensions[0] as f32, dimensions[1] as f32];
         let push_constants = vs::PushConstants {
             screen_size: [
                 dimensions[0] as f32 / scale_factor,
@@ -470,12 +421,6 @@ impl Renderer {
                         continue;
                     }
 
-                    let scissors = vec![get_rect_scissor(
-                        scale_factor,
-                        dimensions,
-                        *clip_rect,
-                    )];
-
                     let (vertices, indices) = self.create_subbuffers(mesh)?;
 
                     let desc_set = self
@@ -485,31 +430,44 @@ impl Renderer {
                         .clone();
                     builder
                         .bind_pipeline_graphics(self.pipeline.clone())
+                        .unwrap() // `Box<ValidationError>`
                         .set_viewport(
                             0,
-                            vec![Viewport {
-                                origin: [0.0, 0.0],
-                                dimensions: [
-                                    dimensions[0] as f32,
-                                    dimensions[1] as f32,
-                                ],
-                                depth_range: 0.0..1.0,
-                            }],
+                            std::iter::once(Viewport {
+                                offset: [0.0, 0.0],
+                                extent,
+                                depth_range: 0.0..=1.0,
+                            })
+                            .collect(),
                         )
-                        .set_scissor(0, scissors)
+                        .unwrap() // `Box<ValidationError>`
+                        .set_scissor(
+                            0,
+                            std::iter::once(get_rect_scissor(
+                                scale_factor,
+                                dimensions,
+                                *clip_rect,
+                            ))
+                            .collect(),
+                        )
+                        .unwrap() // `Box<ValidationError>`
                         .bind_descriptor_sets(
                             PipelineBindPoint::Graphics,
                             self.pipeline.layout().clone(),
                             0,
                             desc_set.clone(),
                         )
+                        .unwrap() // `Box<ValidationError>`
                         .push_constants(
                             self.pipeline.layout().clone(),
                             0,
                             push_constants,
                         )
+                        .unwrap() // `Box<ValidationError>`
                         .bind_vertex_buffers(0, vertices.clone())
+                        .unwrap() // `Box<ValidationError>`
                         .bind_index_buffer(indices.clone())
+                        .unwrap() // `Box<ValidationError>`
                         .draw_indexed(
                             u32::try_from(indices.len())
                                 .map_err(|_| RhError::IndexCountTooLarge)?,
@@ -517,7 +475,8 @@ impl Renderer {
                             0,
                             0,
                             0,
-                        )?;
+                        )
+                        .unwrap(); // `Box<ValidationError>`
                 }
                 Primitive::Callback(_callback) => {
                     // FIXME Figure this out
@@ -574,12 +533,135 @@ fn get_rect_scissor(
     // min.x and min.y were already clamped to be at least 0
     #[allow(clippy::cast_sign_loss)]
     Scissor {
-        origin: [min.x.round() as u32, min.y.round() as u32],
-        dimensions: [
+        offset: [min.x.round() as u32, min.y.round() as u32],
+        extent: [
             (max.x.round() - min.x) as u32,
             (max.y.round() - min.y) as u32,
         ],
     }
+}
+
+/// Helper function for creating a graphics pipeline
+///
+/// # Errors
+/// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+#[allow(clippy::needless_pass_by_value)]
+fn create_pipeline(
+    device: Arc<Device>, // Not a reference
+    format: vulkano::format::Format,
+) -> Result<Arc<GraphicsPipeline>, RhError> {
+    let pipeline = {
+        let vs = vs::load(device.clone())
+            .map_err(Validated::unwrap)?
+            .entry_point("main")
+            .ok_or(RhError::VertexShaderError)?;
+        let fs = fs::load(device.clone())
+            .map_err(Validated::unwrap)?
+            .entry_point("main")
+            .ok_or(RhError::FragmentShaderError)?;
+
+        let vertex_input_state = EguiVertex::per_vertex()
+            .definition(&vs.info().input_interface)
+            .unwrap(); // `Box<ValidationError>`
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())?,
+        )
+        .map_err(Validated::unwrap)?;
+
+        let subpass = PipelineRenderingCreateInfo {
+            color_attachment_formats: vec![Some(format)],
+            ..Default::default()
+        };
+
+        GraphicsPipeline::new(
+            device,
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState::default()),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                depth_stencil_state: None,
+                color_blend_state: Some(ColorBlendState {
+                    attachments: vec![ColorBlendAttachmentState {
+                        blend: Some(AttachmentBlend {
+                            // Not typical alpha blend values. Ported from
+                            // previous code to vulkano 0.34.
+                            src_color_blend_factor: BlendFactor::One,
+                            dst_color_blend_factor:
+                                BlendFactor::OneMinusSrcAlpha,
+                            color_blend_op: BlendOp::Add,
+                            src_alpha_blend_factor:
+                                BlendFactor::OneMinusDstAlpha,
+                            dst_alpha_blend_factor: BlendFactor::One,
+                            alpha_blend_op: BlendOp::Add,
+                        }),
+                        color_write_mask: ColorComponents::all(),
+                        color_write_enable: true,
+                    }],
+                    ..Default::default()
+                }),
+                // Previous code used `viewport_dynamic_scissor_dynamic`.
+                // This is a guess at how to do that in vulkan 0.34.
+                // `viewport_state` might also need to be involved.
+                // FIXME
+                dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                    .into_iter()
+                    .collect(),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
+            },
+        )
+        .map_err(Validated::unwrap)?
+    };
+    Ok(pipeline)
+}
+
+/// Helper function for creating buffers
+///
+/// # Errors
+/// May return `RhError`
+fn create_buffers(
+    allocator: &Arc<StandardMemoryAllocator>,
+) -> Result<(SubbufferAllocator, SubbufferAllocator), RhError> {
+    // Create vertex and index buffers
+    let vertex_buffer_pool = SubbufferAllocator::new(
+        allocator.clone(),
+        SubbufferAllocatorCreateInfo {
+            buffer_usage: BufferUsage::VERTEX_BUFFER,
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+    );
+    vertex_buffer_pool
+        .reserve(VERTEX_BUFFER_SIZE)
+        .expect("Failed to reserve vertex buffer memory");
+    let index_buffer_pool = SubbufferAllocator::new(
+        allocator.clone(),
+        SubbufferAllocatorCreateInfo {
+            buffer_usage: BufferUsage::INDEX_BUFFER,
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+    );
+    index_buffer_pool.reserve(INDEX_BUFFER_SIZE)?;
+
+    Ok((vertex_buffer_pool, index_buffer_pool))
 }
 
 /// A set of resources used to construct the render pipeline. These can be reused

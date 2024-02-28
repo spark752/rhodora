@@ -1,40 +1,35 @@
 /// A module of utility functions
 use crate::vk_window::VkWindow;
-use crate::{
-    rh_error::RhError,
-    types::{AttachmentView, TransferFuture},
-};
+use crate::{rh_error::RhError, types::TransferFuture};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
     command_buffer::{
         allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
-        CommandBufferBeginError, CommandBufferUsage, PrimaryAutoCommandBuffer,
+        CommandBufferUsage, PrimaryAutoCommandBuffer,
         PrimaryCommandBufferAbstract, RenderingAttachmentInfo,
         RenderingAttachmentResolveInfo,
     },
     descriptor_set::layout::DescriptorSetLayout,
     device::{physical::PhysicalDevice, Queue},
     format::{Format, FormatFeatures},
-    image::{
-        view::ImageView, AttachmentImage, ImageUsage, SampleCount,
-        SwapchainImage,
-    },
-    memory::allocator::MemoryAllocator,
+    image::{view::ImageView, Image, ImageCreateInfo, ImageUsage, SampleCount},
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator},
     pipeline::{
         graphics::color_blend::{
             AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState,
             ColorBlendState, ColorComponents,
         },
-        GraphicsPipeline, Pipeline, StateMode,
+        GraphicsPipeline, Pipeline,
     },
-    render_pass::{LoadOp, StoreOp},
+    render_pass::{AttachmentLoadOp, AttachmentStoreOp},
     swapchain::{
         ColorSpace, PresentMode, Surface, SurfaceInfo, Swapchain,
         SwapchainCreateInfo,
     },
     sync::GpuFuture,
 };
+use vulkano::{Validated, VulkanError};
 
 /// # Errors
 /// May return `RhError`
@@ -60,75 +55,111 @@ pub fn alpha_blend_enable() -> ColorBlendState {
                     // Disabled is source = 1, destination = 0,
                     // op = Add (but just set blend to None instead)
                     // This is for typical alpha blending:
-                    color_source: BlendFactor::SrcAlpha,
-                    color_destination: BlendFactor::OneMinusSrcAlpha,
-                    color_op: BlendOp::Add,
-                    alpha_source: BlendFactor::One,
-                    alpha_destination: BlendFactor::Zero,
-                    alpha_op: BlendOp::Add,
+                    src_color_blend_factor: BlendFactor::SrcAlpha,
+                    dst_color_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                    color_blend_op: BlendOp::Add,
+                    src_alpha_blend_factor: BlendFactor::One,
+                    dst_alpha_blend_factor: BlendFactor::Zero,
+                    alpha_blend_op: BlendOp::Add,
                 },
             ),
             color_write_mask: ColorComponents::all(),
-            color_write_enable: StateMode::Fixed(true),
+            color_write_enable: true,
         }],
         ..Default::default()
     }
 }
 
+/// Creates a rendering target
+///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn create_target(
-    allocator: &(impl MemoryAllocator + ?Sized),
+    allocator: Arc<dyn MemoryAllocator>,
     dimensions: [u32; 2],
     format: Format,
-) -> Result<AttachmentView, RhError> {
-    Ok(ImageView::new_default(AttachmentImage::with_usage(
-        allocator,
-        dimensions,
-        format,
-        ImageUsage::COLOR_ATTACHMENT
-            | ImageUsage::SAMPLED
-            | ImageUsage::TRANSFER_DST,
-    )?)?)
+) -> Result<Arc<ImageView>, RhError> {
+    Ok(ImageView::new_default(
+        Image::new(
+            allocator,
+            ImageCreateInfo {
+                format,
+                extent: [dimensions[0], dimensions[1], 1],
+                usage: ImageUsage::COLOR_ATTACHMENT
+                    | ImageUsage::SAMPLED
+                    | ImageUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .map_err(Validated::unwrap)?,
+    )
+    .map_err(Validated::unwrap)?)
 }
 
+/// Creates a depth buffer
+///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn create_depth(
-    allocator: &(impl MemoryAllocator + ?Sized),
+    allocator: Arc<dyn MemoryAllocator>,
     dimensions: [u32; 2],
     format: Format,
     samples: SampleCount,
-) -> Result<AttachmentView, RhError> {
+) -> Result<Arc<ImageView>, RhError> {
     Ok(ImageView::new_default(
-        AttachmentImage::multisampled_with_usage(
+        Image::new(
             allocator,
-            dimensions,
-            samples,
-            format,
-            ImageUsage::DEPTH_STENCIL_ATTACHMENT
-                | ImageUsage::TRANSIENT_ATTACHMENT,
-        )?,
-    )?)
+            ImageCreateInfo {
+                format,
+                extent: [dimensions[0], dimensions[1], 1],
+                samples,
+                usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT
+                    | ImageUsage::TRANSIENT_ATTACHMENT,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .map_err(Validated::unwrap)?,
+    )
+    .map_err(Validated::unwrap)?)
 }
 
+/// Creates an MSAA rendering target
+///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn create_msaa(
-    allocator: &(impl MemoryAllocator + ?Sized),
+    allocator: Arc<dyn MemoryAllocator>,
     dimensions: [u32; 2],
     format: Format,
     samples: SampleCount,
-) -> Result<AttachmentView, RhError> {
+) -> Result<Arc<ImageView>, RhError> {
     Ok(ImageView::new_default(
-        AttachmentImage::multisampled_with_usage(
+        Image::new(
             allocator,
-            dimensions,
-            samples,
-            format,
-            ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSIENT_ATTACHMENT,
-        )?,
-    )?)
+            ImageCreateInfo {
+                format,
+                extent: [dimensions[0], dimensions[1], 1],
+                samples,
+                usage: ImageUsage::COLOR_ATTACHMENT
+                    | ImageUsage::TRANSIENT_ATTACHMENT,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .map_err(Validated::unwrap)?,
+    )
+    .map_err(Validated::unwrap)?)
 }
 
 /// Select first supported format for depth attachment from an array of
@@ -136,13 +167,17 @@ pub fn create_msaa(
 ///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn find_depth_format(
     physical: &PhysicalDevice,
     candidates: &[Format],
 ) -> Result<Format, RhError> {
     for candidate in candidates {
         if physical
-            .format_properties(*candidate)?
+            .format_properties(*candidate)
+            .unwrap() // `Box<ValidationError>`
             .optimal_tiling_features
             .intersects(FormatFeatures::DEPTH_STENCIL_ATTACHMENT)
         {
@@ -157,13 +192,17 @@ pub fn find_depth_format(
 ///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn find_colour_format(
     physical: &PhysicalDevice,
     candidates: &[Format],
 ) -> Result<Format, RhError> {
     for candidate in candidates {
         let features = physical
-            .format_properties(*candidate)?
+            .format_properties(*candidate)
+            .unwrap() // `Box<ValidationError>`
             .optimal_tiling_features;
         if features.intersects(FormatFeatures::COLOR_ATTACHMENT)
             && features.intersects(FormatFeatures::SAMPLED_IMAGE_FILTER_LINEAR)
@@ -179,6 +218,9 @@ pub fn find_colour_format(
 ///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn find_swapchain_format(
     physical: &PhysicalDevice,
     surface: &Surface,
@@ -186,7 +228,8 @@ pub fn find_swapchain_format(
 ) -> Result<Format, RhError> {
     for candidate in candidates {
         let search = physical
-            .surface_formats(surface, SurfaceInfo::default())?
+            .surface_formats(surface, SurfaceInfo::default())
+            .map_err(Validated::unwrap)?
             .into_iter()
             .find(|&f| f.0 == *candidate && f.1 == ColorSpace::SrgbNonLinear);
         if let Some(f) = search {
@@ -203,7 +246,7 @@ pub fn create_primary_cbb(
     queue: &Queue,
 ) -> Result<
     AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    CommandBufferBeginError,
+    Validated<VulkanError>,
 > {
     AutoCommandBufferBuilder::primary(
         cmd_allocator,
@@ -214,7 +257,9 @@ pub fn create_primary_cbb(
 
 #[must_use]
 pub fn choose_present_mode(window: &VkWindow, vsync: bool) -> PresentMode {
-    let mode_result = window.physical().surface_present_modes(window.surface());
+    let mode_result = window
+        .physical()
+        .surface_present_modes(window.surface(), SurfaceInfo::default());
     mode_result.map_or(PresentMode::Fifo, |mut modes| {
         if vsync {
             // Might have to search through the list twice which
@@ -248,22 +293,23 @@ pub fn create_swapchain(
     window: &VkWindow,
     format: Format,
     present_mode: PresentMode,
-) -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), RhError> {
+) -> Result<(Arc<Swapchain>, Vec<Arc<Image>>), RhError> {
     let (swapchain, images) = {
-        let surface_caps = window.surface_caps()?;
+        let surface_caps = window.surface_caps().map_err(Validated::unwrap)?;
         Swapchain::new(
             window.device().clone(),
             window.surface().clone(),
             SwapchainCreateInfo {
                 min_image_count: surface_caps.min_image_count + 1,
-                image_format: Some(format),
+                image_format: format,
                 image_extent: window.dimensions()?.into(),
                 image_color_space: ColorSpace::SrgbNonLinear,
                 present_mode,
                 image_usage: ImageUsage::COLOR_ATTACHMENT,
                 ..Default::default()
             },
-        )?
+        )
+        .map_err(Validated::unwrap)?
     };
     Ok((swapchain, images))
 }
@@ -271,14 +317,14 @@ pub fn create_swapchain(
 #[must_use]
 pub fn attachment_info(
     background: &[f32; 4],
-    target_image_view: AttachmentView,
-    msaa_option: Option<AttachmentView>,
+    target_image_view: Arc<ImageView>,
+    msaa_option: Option<Arc<ImageView>>,
 ) -> RenderingAttachmentInfo {
     let clear_value = Some((*background).into());
     if let Some(msaa_image_view) = msaa_option {
         RenderingAttachmentInfo {
-            load_op: LoadOp::Clear,
-            store_op: StoreOp::DontCare,
+            load_op: AttachmentLoadOp::Clear,
+            store_op: AttachmentStoreOp::DontCare,
             clear_value,
             resolve_info: Some(RenderingAttachmentResolveInfo::image_view(
                 target_image_view,
@@ -287,8 +333,8 @@ pub fn attachment_info(
         }
     } else {
         RenderingAttachmentInfo {
-            load_op: LoadOp::Clear,
-            store_op: StoreOp::Store,
+            load_op: AttachmentLoadOp::Clear,
+            store_op: AttachmentStoreOp::Store,
             clear_value,
             ..RenderingAttachmentInfo::image_view(target_image_view)
         }
@@ -311,7 +357,12 @@ pub fn start_transfer(
     cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     queue: Arc<Queue>,
 ) -> Result<TransferFuture, RhError> {
-    Ok(cbb.build()?.execute(queue)?.then_signal_fence_and_flush()?)
+    Ok(cbb
+        .build()
+        .map_err(Validated::unwrap)?
+        .execute(queue)?
+        .then_signal_fence_and_flush()
+        .map_err(Validated::unwrap)?)
 }
 
 /// Transform a 3D position using a 4x4 matrix and return as a `glm::Vec3`

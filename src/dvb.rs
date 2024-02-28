@@ -4,9 +4,10 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::AutoCommandBufferBuilder,
     memory::allocator::{
-        AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator,
+        AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
     },
     pipeline::graphics::vertex_input::Vertex,
+    Validated,
 };
 
 /// Buffers that pass vertex data to the GPU. Note that `DeviceVertexBuffers`
@@ -35,29 +36,33 @@ impl<T: Vertex> DeviceVertexBuffers<T> {
         // over to the GPU. But vulkano removed the function that did that
         // so this temporary implementation is used instead.
         let indices = Buffer::from_iter(
-            &mem_allocator,
+            mem_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::INDEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             index_buff,
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
         let interleaved = Buffer::from_iter(
-            &mem_allocator,
+            mem_allocator,
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             inter_buff,
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
         Ok(Self {
             indices,
             interleaved,

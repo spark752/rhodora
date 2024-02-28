@@ -15,15 +15,12 @@ opt-level = 1
 enum_glob_use = "deny"
 pedantic = "deny"
 nursery = "deny"
-unwrap_used = "deny"
 string_to_string = "deny"
 panic = "deny"
-#expect_used = "deny"
 
 [dependencies]
-vulkano = { version = "0.33.0" }
-vulkano-win = { version = "0.33.0" }
-vulkano-shaders = { version = "0.33.0" }
+vulkano = { version = "0.34.0" }
+vulkano-shaders = { version = "0.34.0" }
 winit = "0.28.0"
 bytemuck = "1.12.3"
 nalgebra-glm = "0.18.0"

@@ -13,48 +13,82 @@ use crate::rh_error::RhError;
 use image::RgbaImage;
 use std::sync::Arc;
 use vulkano::{
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
         PrimaryCommandBufferAbstract,
     },
     device::Queue,
-    image::{
-        view::ImageView, ImageDimensions, ImageViewAbstract, ImmutableImage,
-        MipmapsCount,
-    },
+    image::{Image, ImageCreateInfo, ImageUsage},
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
+    Validated,
 };
 
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 pub fn immutable_texture_from_bytes(
     memory: &Memory,
     queue: Arc<Queue>,
     byte_data: &[u8],
     dimensions: [u32; 2],
     format: vulkano::format::Format,
-) -> Result<Arc<dyn ImageViewAbstract + Send + Sync + 'static>, RhError> {
-    let vko_dims = ImageDimensions::Dim2d {
-        width: dimensions[0],
-        height: dimensions[1],
-        array_layers: 1,
-    };
+) -> Result<Arc<Image>, RhError> {
+    let extent = [dimensions[0], dimensions[1], 1];
 
+    // Create command buffer builder
     let mut cbb = AutoCommandBufferBuilder::primary(
         &memory.command_buffer_allocator,
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
-    )?;
-    let texture = ImmutableImage::from_iter(
-        &memory.memory_allocator,
-        byte_data.iter().copied(),
-        vko_dims,
-        MipmapsCount::One,
-        format,
-        &mut cbb,
-    )?;
-    let _fut = cbb.build()?.execute(queue)?;
+    )
+    .map_err(Validated::unwrap)?;
 
-    Ok(ImageView::new_default(texture)?)
+    // Create vulkano data buffer from the image data
+    let data_buffer = Buffer::from_iter(
+        memory.memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        byte_data.iter().copied(),
+    )
+    .map_err(Validated::unwrap)?;
+
+    // Create a vulkano image
+    let image = Image::new(
+        memory.memory_allocator.clone(),
+        ImageCreateInfo {
+            format,
+            extent,
+            array_layers: 1, // Default but listed here for clarity
+            mip_levels: 1,   // Default but listed here for clarity
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )
+    .map_err(Validated::unwrap)?;
+
+    // Record commands to transfer data from the buffer to the image
+    cbb.copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+        data_buffer,
+        image.clone(),
+    ))
+    .unwrap(); // This is a Box<ValidationError>
+
+    // Build and execute the command queue
+    let _fut = cbb.build().map_err(Validated::unwrap)?.execute(queue)?;
+
+    // Return as an Image, not an ImageView
+    Ok(image)
 }
 
 /// # Errors
@@ -67,7 +101,7 @@ pub fn immutable_texture_from_file(
     queue: Arc<Queue>,
     file_bytes: &[u8],
     format: vulkano::format::Format,
-) -> Result<Arc<dyn ImageViewAbstract + Send + Sync + 'static>, RhError> {
+) -> Result<Arc<Image>, RhError> {
     use image::GenericImageView;
 
     let img = image::load_from_memory(file_bytes)

@@ -1,5 +1,4 @@
 use crate::rh_error::RhError;
-use crate::types::TextureView;
 use log::debug;
 use smallvec::SmallVec;
 use std::fs::File;
@@ -10,14 +9,15 @@ use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, BufferImageCopy, CopyBufferToImageInfo,
     },
-    device::DeviceOwned,
     format::Format,
     image::{
-        view::ImageView, ImageAccess, ImageCreateFlags, ImageDimensions,
-        ImageLayout, ImageSubresourceLayers, ImageUsage, ImmutableImage,
-        MipmapsCount,
+        view::ImageView, Image, ImageCreateInfo, ImageSubresourceLayers,
+        ImageUsage,
     },
-    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryUsage},
+    memory::allocator::{
+        AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter,
+    },
+    Validated,
 };
 
 const MAGIC_HEADER: u32 = 0x2053_4444;
@@ -54,14 +54,20 @@ fn dword(slice: &[u8]) -> Result<u32, RhError> {
     ))
 }
 
+/// Loads a DDS file and records commands to a queue to transfer the data to
+/// GPU memory. The queue must be executed to finish the transfer.
+///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 #[allow(clippy::too_many_lines)]
 pub fn load<T>(
     file_path: &str,
-    mem_allocator: &(impl MemoryAllocator + ?Sized),
+    mem_allocator: Arc<(dyn MemoryAllocator)>,
     cbb: &mut AutoCommandBufferBuilder<T>,
-) -> Result<TextureView, RhError> {
+) -> Result<Arc<ImageView>, RhError> {
     let mut f = File::open(file_path)?;
 
     // Read and process the header
@@ -108,23 +114,15 @@ pub fn load<T>(
     debug!("DXT10 extension: {dxt10_header:?}");
 
     // Vulkano friendly dimensions
-    let dimensions = ImageDimensions::Dim2d {
-        width: header.width,
-        height: header.height,
-        array_layers: 1,
-    };
+    let extent = [header.width, header.height, 1];
 
     // Mipmaps
-    let max_mipmaps = dimensions.max_mip_levels();
-    debug!("Max mipmaps based on dimensions: {max_mipmaps}");
-    let mip_levels = if header.mipmap_count == 1 {
-        MipmapsCount::One
-    } else if header.mipmap_count == max_mipmaps {
-        MipmapsCount::Log2
-    } else {
-        MipmapsCount::Specific(header.mipmap_count)
-    };
-    debug!("Using mipmap levels {mip_levels:?}");
+    debug!(
+        "Max mipmaps based on dimensions: {}",
+        vulkano::image::max_mip_levels(extent)
+    );
+    let mip_levels = header.mipmap_count;
+    debug!("Using {} mipmap levels", mip_levels);
 
     // pixel_flags bits
     // 0x01 = contains alpha data
@@ -179,99 +177,91 @@ pub fn load<T>(
     };
     debug!("Using texture format {texture_format:?}");
 
-    // Read the image data
-    let mut buffer = Vec::new();
-    let data_length = f.read_to_end(&mut buffer)?;
-    debug!("Read {data_length} bytes of image data");
+    // Originally vulkano tried to create the mipmaps by scaling and blitting
+    // which is no good since the mipmaps already exist in the DDS file and are
+    // in a format that doesn't support blitting. That has probably been
+    // changed now though, but this method seems to work.
 
-    // Create the Vulkan image
-    // Ideally it would be as simple as this:
-    /*
-    let imm_image = ImmutableImage::from_iter(
-        memory_allocator,
-        buffer,
-        dimensions,
-        mip_levels,
-        texture_format,
-        cbb,
-    )?;
-    */
-    // But Vulkano tries to create the mipmaps by scaling and blitting
-    // which is no good since the mipmaps already exist in "buffer" and are
-    // in a format that doesn't support blitting
+    // Read the image data into a CPU accessible buffer as the "source"
+    let source = {
+        // This Vec<u8> can go out of scope once the data is in the buffer
+        let mut image_data = Vec::new();
+        let data_length = f.read_to_end(&mut image_data)?;
+        debug!("Read {data_length} bytes of image data");
 
-    // Start by creating a CpuAccessibleBuffer
-    let source = Buffer::from_iter(
+        Buffer::from_iter(
+            mem_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            image_data,
+        )
+        .map_err(Validated::unwrap)?
+    };
+
+    // Create a vulkano image for the destination
+    let image = Image::new(
         mem_allocator,
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
+        ImageCreateInfo {
+            format: texture_format,
+            extent,
+            array_layers: 1, // Default but listed here for clarity
+            mip_levels,
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
             ..Default::default()
         },
-        AllocationCreateInfo {
-            usage: MemoryUsage::Upload,
-            ..Default::default()
-        },
-        buffer,
-    )?;
+        AllocationCreateInfo::default(),
+    )
+    .map_err(Validated::unwrap)?;
 
-    // The usage for the immutable image buffer is as the transfer destination
-    // from "source" but not a source itself (since no blitting)
-    let usage = ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED;
-
-    // The immutable image is created with all the properties and returns a
-    // special "initializer" so data can be copied into from "source"
-    let (image, initializer) = ImmutableImage::uninitialized(
-        mem_allocator,
-        dimensions,
-        texture_format,
-        mip_levels,
-        usage,
-        ImageCreateFlags::empty(),
-        ImageLayout::ShaderReadOnlyOptimal,
-        source
-            .device()
-            .active_queue_family_indices()
-            .iter()
-            .copied(),
-    )?;
-
-    // Next, Vulkano's way is to create a "region" that describes the base image
-    // (mipmap level 0) and then record a copy command to copy that from
-    // "source" to "image". Then it loops through levels and records blitting
-    // commands.
-    // Instead, loop through the levels, creating a "region" for each with
-    // and then record a copy for that. Hopefully this copies all the image
-    // data in a way that Vulkan will understand there are mipmaps and where
-    // to find them.
+    // Next, vulkano's old mipmap creation code's way was to create a "region"
+    // that describes the base image (mipmap level 0) and then record a copy
+    // command to copy that from `source` to `image`. Then it looped through
+    // levels and recorded blitting commands.
+    // Instead of doing that, loop through the levels, creating a "region" for
+    // each and then record a copy command for that. That seems to get all the
+    // image data in a way that Vulkan will understand that there are mipmaps
+    // and be able to find them.
     let mut regions = Vec::new();
     let mut offset = 0;
-    let image_access: Arc<dyn ImageAccess> = image.clone();
+    let image_access = image.clone();
     for level in 0..image_access.mip_levels() {
-        let level_dimensions = dimensions
-            .mip_level_dimensions(level)
-            .ok_or(RhError::UnsupportedFormat)? // Shouldn't happen...
-            .width_height_depth();
+        let image_extent = vulkano::image::mip_level_extent(extent, level)
+            .ok_or(RhError::UnsupportedFormat)?; // Shouldn't happen
         let region = BufferImageCopy {
             buffer_offset: offset,
             image_subresource: ImageSubresourceLayers {
                 mip_level: level,
                 ..image_access.subresource_layers()
             },
-            image_extent: level_dimensions,
+            image_extent,
             ..Default::default()
         };
         regions.push(region);
 
         // Calculate the location of the next mipmap in the compressed data
-        let pw = std::cmp::max((level_dimensions[0] + 3) / 4, 1);
-        let ph = std::cmp::max((level_dimensions[1] + 3) / 4, 1);
+        let pw = std::cmp::max((image_extent[0] + 3) / 4, 1);
+        let ph = std::cmp::max((image_extent[1] + 3) / 4, 1);
         offset += u64::from(pw * ph * block_size);
     }
     debug!("regions vector len {}", regions.len());
+
+    // Record the commands to transfer the regions from the source buffer
+    // to the destination image
     cbb.copy_buffer_to_image(CopyBufferToImageInfo {
         regions: SmallVec::from_vec(regions),
-        ..CopyBufferToImageInfo::buffer_image(source, initializer)
-    })?;
+        ..CopyBufferToImageInfo::buffer_image(source, image.clone())
+    })
+    .unwrap(); // This is a Box<ValidationError>;
 
-    Ok(ImageView::new_default(image)?)
+    // Create an ImageView to the image and return it
+    let image_view =
+        ImageView::new_default(image).map_err(Validated::unwrap)?;
+    Ok(image_view)
 }

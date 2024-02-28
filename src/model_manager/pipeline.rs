@@ -18,23 +18,33 @@ use vulkano::{
         WriteDescriptorSet,
     },
     device::Device,
-    memory::allocator::StandardMemoryAllocator,
-    pipeline::PipelineBindPoint,
-    pipeline::{
-        graphics::{
-            depth_stencil::DepthStencilState,
-            input_assembly::InputAssemblyState, multisample::MultisampleState,
-            render_pass::PipelineRenderingCreateInfo, vertex_input::Vertex,
-            viewport::ViewportState,
-        },
-        GraphicsPipeline, PipelineLayout,
-    },
-    sampler::{
+    image::sampler::{
         Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
         SamplerMipmapMode, LOD_CLAMP_NONE,
     },
+    memory::allocator::{MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::PipelineBindPoint,
+    pipeline::{
+        graphics::{
+            depth_stencil::{DepthState, DepthStencilState},
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineRenderingCreateInfo,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::ViewportState,
+            GraphicsPipelineCreateInfo,
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        DynamicState, GraphicsPipeline, PipelineLayout,
+        PipelineShaderStageCreateInfo,
+    },
     shader::ShaderModule,
+    Validated,
 };
+
+#[allow(unused_imports)]
+use log::{error, info, trace};
 
 const VPL_SET: u32 = 0;
 const VPL_BINDING: u32 = 0;
@@ -57,40 +67,72 @@ pub struct Pipeline {
 ///
 /// # Errors
 /// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 fn build_vk_pipeline<T: Vertex>(
     device: Arc<Device>,
     render_format: &RenderFormat,
     vert_shader: &Arc<ShaderModule>,
     frag_shader: &Arc<ShaderModule>,
 ) -> Result<Arc<GraphicsPipeline>, RhError> {
-    Ok(GraphicsPipeline::start()
-        .render_pass(PipelineRenderingCreateInfo {
+    let pipeline = {
+        let vs = vert_shader
+            .entry_point("main")
+            .ok_or(RhError::VertexShaderError)?;
+        let fs = frag_shader
+            .entry_point("main")
+            .ok_or(RhError::FragmentShaderError)?;
+
+        let vertex_input_state = T::per_vertex()
+            .definition(&vs.info().input_interface)
+            .unwrap(); // `Box<ValidationError>`
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())?,
+        )
+        .map_err(Validated::unwrap)?;
+
+        let subpass = PipelineRenderingCreateInfo {
             color_attachment_formats: vec![Some(render_format.colour_format)],
             depth_attachment_format: Some(render_format.depth_format),
             ..Default::default()
-        })
-        .multisample_state(MultisampleState {
-            rasterization_samples: render_format.sample_count,
-            ..Default::default()
-        })
-        .color_blend_state(util::alpha_blend_enable())
-        .vertex_input_state(T::per_vertex())
-        .input_assembly_state(InputAssemblyState::new())
-        .vertex_shader(
-            vert_shader
-                .entry_point("main")
-                .ok_or(RhError::VertexShaderError)?,
-            (),
+        };
+
+        GraphicsPipeline::new(
+            device,
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState::default()),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState {
+                    rasterization_samples: render_format.sample_count,
+                    ..Default::default()
+                }),
+                depth_stencil_state: Some(DepthStencilState {
+                    depth: Some(DepthState::simple()),
+                    ..Default::default()
+                }),
+                color_blend_state: Some(util::alpha_blend_enable()),
+                dynamic_state: std::iter::once(DynamicState::Viewport)
+                    .collect(),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
+            },
         )
-        .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-        .fragment_shader(
-            frag_shader
-                .entry_point("main")
-                .ok_or(RhError::FragmentShaderError)?,
-            (),
-        )
-        .depth_stencil_state(DepthStencilState::simple_depth_test())
-        .build(device)?)
+        .map_err(Validated::unwrap)?
+    };
+    Ok(pipeline)
 }
 
 impl Pipeline {
@@ -114,22 +156,24 @@ impl Pipeline {
         const USE_VIZ: bool = false; // Use for testing FIXME
 
         let frag_shader = if USE_VIZ {
-            viz_fs::load(device.clone())?
+            viz_fs::load(device.clone()).map_err(Validated::unwrap)?
         } else {
-            pbr_fs::load(device.clone())?
+            pbr_fs::load(device.clone()).map_err(Validated::unwrap)?
         };
         let graphics = {
             match style {
                 Style::Rigid => build_vk_pipeline::<RigidFormat>(
                     device.clone(),
                     render_format,
-                    &rigid_vs::load(device.clone())?,
+                    &rigid_vs::load(device.clone())
+                        .map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
                 Style::Skinned => build_vk_pipeline::<SkinnedFormat>(
                     device.clone(),
                     render_format,
-                    &skinned_vs::load(device.clone())?,
+                    &skinned_vs::load(device.clone())
+                        .map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
             }
@@ -148,13 +192,20 @@ impl Pipeline {
                 //mip_lod_bias: -2.0, // for testing, negative = use larger map
                 ..Default::default()
             },
-        )?;
+        )
+        .map_err(Validated::unwrap)?;
 
         // These need to be customizable somehow
+        // For vulkano 0.34 these need to have `memory_type_filter` set
+        // like below, or similar. Without that they can end up not accesible
+        // to the host and result in a `VkHostAccessError(NotHostMapped` when
+        // trying to write them from the CPU.
         let vpl_pool = SubbufferAllocator::new(
             mem_allocator.clone(),
             SubbufferAllocatorCreateInfo {
                 buffer_usage: BufferUsage::UNIFORM_BUFFER,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
         );
@@ -162,6 +213,8 @@ impl Pipeline {
             mem_allocator,
             SubbufferAllocatorCreateInfo {
                 buffer_usage: BufferUsage::UNIFORM_BUFFER,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
         );
@@ -181,8 +234,13 @@ impl Pipeline {
         self.graphics.layout()
     }
 
+    /// Start rendering pass for this pipeline
+    ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn start_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
@@ -190,6 +248,7 @@ impl Pipeline {
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
+        //trace!("Pipeline start_pass");
         // Uniform buffer for view and projection matrix is in descriptor set
         // 0 since this will constant for the entire frame.
         // Lights are also here as an experiment.
@@ -199,6 +258,7 @@ impl Pipeline {
                 ambient: lights.ambient_array(),
                 lights: lights.light_array(&camera.view_matrix()),
             };
+            //trace!("About to write to 'UniformVPL' UBO");
             let buffer = self.vpl_pool.allocate_sized()?;
             *buffer.write()? = data;
             buffer
@@ -207,14 +267,18 @@ impl Pipeline {
             desc_set_allocator,
             util::get_layout(&self.graphics, VPL_SET as usize)?.clone(),
             [WriteDescriptorSet::buffer(VPL_BINDING, vpl_buffer)],
-        )?;
+            [],
+        )
+        .map_err(Validated::unwrap)?;
         cbb.bind_pipeline_graphics(self.graphics.clone())
+            .unwrap() // `Box<ValidationError>`
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.layout().clone(),
                 VPL_SET,
                 desc_set,
-            );
+            )
+            .unwrap(); // `Box<ValidationError>`
         Ok(())
     }
 }

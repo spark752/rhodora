@@ -1,29 +1,33 @@
+// vulkano_win is deprecated, but if we get an error from it we still have to
+// handle it
+#![allow(deprecated)]
+
 use std::{error, fmt};
 use vulkano::{
-    buffer::BufferError,
-    command_buffer::{
-        BuildError, CommandBufferBeginError, CommandBufferExecError, CopyError,
-        PipelineExecutionError, RenderPassError,
-    },
-    descriptor_set::DescriptorSetCreationError,
-    device::{physical::PhysicalDeviceError, DeviceCreationError},
-    image::immutable::ImmutableImageCreationError,
-    image::sys::ImageError,
-    image::view::ImageViewCreationError,
-    instance::InstanceCreationError,
-    library::LoadingError,
-    memory::allocator::AllocationCreationError,
-    pipeline::graphics::GraphicsPipelineCreationError,
-    sampler::SamplerCreationError,
-    shader::ShaderCreationError,
-    swapchain::SwapchainCreationError,
-    sync::FlushError,
+    buffer::AllocateBufferError, command_buffer::CommandBufferExecError,
+    image::AllocateImageError, library::LoadingError,
+    memory::allocator::MemoryAllocatorError,
+    pipeline::layout::IntoPipelineLayoutCreateInfoError, sync::HostAccessError,
     VulkanError,
 };
+use winit::error::OsError;
 
-// Some vulkano error types are very large so are boxed
+/// Unified error type
+///
+/// As of vulkano 0.34, many vulkano functions may return `ValidatedError` which
+/// contains either some vulkano error type or a boxed `ValidationError` from
+/// Vulkan. These are currently handled by mapping first through
+/// `Validated::unwrap` which will panic on the validation errors.
+/// The other errors will be converted to `RhError`.
+///
+/// Some of the lower level vulkano functions may return a boxed
+/// `ValidationError` directly. These are currently handled by a standard
+/// `unwrap` so will panic.
+///
+/// Some vulkano error types are very large so are boxed.
 #[derive(Debug)]
 pub enum RhError {
+    RedoFromStart, // Placeholder inspired by Commodore BASIC
     WindowNotFound,
     QueueNotFound,
     DeviceNotFound,
@@ -46,33 +50,19 @@ pub enum RhError {
     IndexTooLarge,
     VertexCountTooLarge,
     IndexCountTooLarge,
+    WinitOsError(OsError),
     SerdeYamlError(Box<serde_yaml::Error>),
     StdIoError(std::io::Error),
     TObjLoadError(tobj::LoadError),
     ImageImageError(Box<image::error::ImageError>),
-    VkWinCreationError(Box<vulkano_win::CreationError>),
     VkVulkanError(VulkanError),
     VkLoadingError(Box<LoadingError>),
-    VkInstanceCreationError(Box<InstanceCreationError>),
-    VkDeviceCreationError(Box<DeviceCreationError>),
-    VkImageError(Box<ImageError>),
-    VkImageViewCreationError(Box<ImageViewCreationError>),
-    VkImmutableImageCreationError(Box<ImmutableImageCreationError>),
-    VkDescriptorSetCreationError(Box<DescriptorSetCreationError>),
-    VkFlushError(Box<FlushError>),
-    VkBuildError(BuildError),
     VkCommandBufferExecError(Box<CommandBufferExecError>),
-    VkAllocationCreationError(Box<AllocationCreationError>),
-    VkPhysicalDeviceError(Box<PhysicalDeviceError>),
-    VkSwapchainCreationError(Box<SwapchainCreationError>),
-    VkCommandBufferBeginError(Box<CommandBufferBeginError>),
-    VkShaderCreationError(Box<ShaderCreationError>),
-    VkGraphicsPipelineCreationError(Box<GraphicsPipelineCreationError>),
-    VkSamplerCreationError(Box<SamplerCreationError>),
-    VkPipelineExecutionError(Box<PipelineExecutionError>),
-    VkRenderPassError(Box<RenderPassError>),
-    VkCopyError(Box<CopyError>),
-    VkBufferError(Box<BufferError>),
+    VkMemoryAllocatorError(MemoryAllocatorError),
+    VkAllocateBufferError(AllocateBufferError),
+    VkAllocateImageError(AllocateImageError),
+    VkHostAccessError(HostAccessError),
+    VkIntoPipelineLayoutCreateInfoError(IntoPipelineLayoutCreateInfoError),
     GltfError(Box<gltf::Error>),
 }
 
@@ -82,6 +72,9 @@ impl fmt::Display for RhError {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Self::RedoFromStart => {
+                write!(f, "?REDO FROM START (don't know what happened)")
+            }
             Self::WindowNotFound => write!(f, "winit window not found"),
             Self::QueueNotFound => write!(f, "Vulkan queue not found"),
             Self::DeviceNotFound => {
@@ -120,6 +113,7 @@ impl fmt::Display for RhError {
             Self::VertexCountTooLarge => {
                 write!(f, "vertex count does not fit in 32 bits")
             }
+            Self::WinitOsError(e) => write!(f, "OsError {e}"),
             Self::SerdeYamlError(e) => {
                 write!(f, "serde_yaml::Error: {e}")
             }
@@ -128,64 +122,25 @@ impl fmt::Display for RhError {
             Self::ImageImageError(e) => {
                 write!(f, "image crate ImageError: {e}")
             }
-            Self::VkWinCreationError(e) => {
-                write!(f, "vulkano_win CreationError: {e}")
-            }
             Self::VkVulkanError(e) => write!(f, "vulkano VulkanError: {e}"),
             Self::VkLoadingError(e) => write!(f, "vulkano LoadingError: {e}"),
-            Self::VkInstanceCreationError(e) => {
-                write!(f, "vulkano InstanceCreationError: {e}")
-            }
-            Self::VkDeviceCreationError(e) => {
-                write!(f, "vulkano DeviceCreationError: {e}")
-            }
-            Self::VkImageError(e) => write!(f, "vulkano ImageError: {e}"),
-            Self::VkImageViewCreationError(e) => {
-                write!(f, "vulkano ImageViewCreationError: {e}")
-            }
-            Self::VkImmutableImageCreationError(e) => {
-                write!(f, "vulkano ImmutableImageCreationError: {e}")
-            }
-            Self::VkDescriptorSetCreationError(e) => {
-                write!(f, "vulkano DescriptorSetCreationError: {e}")
-            }
-            Self::VkFlushError(e) => write!(f, "vulkano FlushError: {e}"),
-            Self::VkBuildError(e) => write!(f, "vulkano BuildError: {e}"),
             Self::VkCommandBufferExecError(e) => {
                 write!(f, "vulkano CommandBufferExecError: {e}")
             }
-            Self::VkAllocationCreationError(e) => {
-                write!(f, "vulkano AllocationCreationError: {e}")
+            Self::VkMemoryAllocatorError(e) => {
+                write!(f, "vulkano MemoryAllocatorError: {e}")
             }
-            Self::VkPhysicalDeviceError(e) => {
-                write!(f, "vulkano PhysicalDeviceError: {e}")
+            Self::VkAllocateBufferError(e) => {
+                write!(f, "vulkano AllocateBufferError: {e}")
             }
-            Self::VkSwapchainCreationError(e) => {
-                write!(f, "vulkano SwapchainCreationError: {e}")
+            Self::VkAllocateImageError(e) => {
+                write!(f, "vulkano AllocateImageError: {e}")
             }
-            Self::VkCommandBufferBeginError(e) => {
-                write!(f, "vulkano CommandBufferBeginError: {e}")
+            Self::VkHostAccessError(e) => {
+                write!(f, "vulkano HostAccessError: {e}")
             }
-            Self::VkShaderCreationError(e) => {
-                write!(f, "vulkano ShaderCreationError: {e}")
-            }
-            Self::VkGraphicsPipelineCreationError(e) => {
-                write!(f, "vulkano GraphicsPipelineCreationError: {e}")
-            }
-            Self::VkSamplerCreationError(e) => {
-                write!(f, "vulkano SamplerCreationError: {e}")
-            }
-            Self::VkPipelineExecutionError(e) => {
-                write!(f, "vulkano PipelineExecutionError: {e}")
-            }
-            Self::VkRenderPassError(e) => {
-                write!(f, "vulkano RenderPassError: {e}")
-            }
-            Self::VkCopyError(e) => {
-                write!(f, "vulkano CopyError: {e}")
-            }
-            Self::VkBufferError(e) => {
-                write!(f, "vulkano BufferError: {e}")
+            Self::VkIntoPipelineLayoutCreateInfoError(e) => {
+                write!(f, "vulkano IntoPipelineLayoutCreateInfoError: {e}")
             }
             Self::GltfError(e) => {
                 write!(f, "gltf Error: {e}")
@@ -224,63 +179,9 @@ impl From<LoadingError> for RhError {
     }
 }
 
-impl From<InstanceCreationError> for RhError {
-    fn from(e: InstanceCreationError) -> Self {
-        Self::VkInstanceCreationError(Box::new(e))
-    }
-}
-
-impl From<DeviceCreationError> for RhError {
-    fn from(e: DeviceCreationError) -> Self {
-        Self::VkDeviceCreationError(Box::new(e))
-    }
-}
-
-impl From<ImageError> for RhError {
-    fn from(e: ImageError) -> Self {
-        Self::VkImageError(Box::new(e))
-    }
-}
-
-impl From<vulkano_win::CreationError> for RhError {
-    fn from(e: vulkano_win::CreationError) -> Self {
-        Self::VkWinCreationError(Box::new(e))
-    }
-}
-
-impl From<ImageViewCreationError> for RhError {
-    fn from(e: ImageViewCreationError) -> Self {
-        Self::VkImageViewCreationError(Box::new(e))
-    }
-}
-
 impl From<VulkanError> for RhError {
     fn from(e: VulkanError) -> Self {
         Self::VkVulkanError(e)
-    }
-}
-
-impl From<ImmutableImageCreationError> for RhError {
-    fn from(e: ImmutableImageCreationError) -> Self {
-        Self::VkImmutableImageCreationError(Box::new(e))
-    }
-}
-
-impl From<DescriptorSetCreationError> for RhError {
-    fn from(e: DescriptorSetCreationError) -> Self {
-        Self::VkDescriptorSetCreationError(Box::new(e))
-    }
-}
-
-impl From<FlushError> for RhError {
-    fn from(e: FlushError) -> Self {
-        Self::VkFlushError(Box::new(e))
-    }
-}
-
-impl From<BuildError> for RhError {
-    fn from(e: BuildError) -> Self {
-        Self::VkBuildError(e)
     }
 }
 
@@ -290,68 +191,38 @@ impl From<CommandBufferExecError> for RhError {
     }
 }
 
-impl From<AllocationCreationError> for RhError {
-    fn from(e: AllocationCreationError) -> Self {
-        Self::VkAllocationCreationError(Box::new(e))
+impl From<MemoryAllocatorError> for RhError {
+    fn from(e: MemoryAllocatorError) -> Self {
+        Self::VkMemoryAllocatorError(e)
     }
 }
 
-impl From<PhysicalDeviceError> for RhError {
-    fn from(e: PhysicalDeviceError) -> Self {
-        Self::VkPhysicalDeviceError(Box::new(e))
+impl From<AllocateBufferError> for RhError {
+    fn from(e: AllocateBufferError) -> Self {
+        Self::VkAllocateBufferError(e)
     }
 }
 
-impl From<SwapchainCreationError> for RhError {
-    fn from(e: SwapchainCreationError) -> Self {
-        Self::VkSwapchainCreationError(Box::new(e))
+impl From<HostAccessError> for RhError {
+    fn from(e: HostAccessError) -> Self {
+        Self::VkHostAccessError(e)
     }
 }
 
-impl From<CommandBufferBeginError> for RhError {
-    fn from(e: CommandBufferBeginError) -> Self {
-        Self::VkCommandBufferBeginError(Box::new(e))
+impl From<AllocateImageError> for RhError {
+    fn from(e: AllocateImageError) -> Self {
+        Self::VkAllocateImageError(e)
     }
 }
 
-impl From<ShaderCreationError> for RhError {
-    fn from(e: ShaderCreationError) -> Self {
-        Self::VkShaderCreationError(Box::new(e))
+impl From<IntoPipelineLayoutCreateInfoError> for RhError {
+    fn from(e: IntoPipelineLayoutCreateInfoError) -> Self {
+        Self::VkIntoPipelineLayoutCreateInfoError(e)
     }
 }
 
-impl From<GraphicsPipelineCreationError> for RhError {
-    fn from(e: GraphicsPipelineCreationError) -> Self {
-        Self::VkGraphicsPipelineCreationError(Box::new(e))
-    }
-}
-
-impl From<SamplerCreationError> for RhError {
-    fn from(e: SamplerCreationError) -> Self {
-        Self::VkSamplerCreationError(Box::new(e))
-    }
-}
-
-impl From<PipelineExecutionError> for RhError {
-    fn from(e: PipelineExecutionError) -> Self {
-        Self::VkPipelineExecutionError(Box::new(e))
-    }
-}
-
-impl From<RenderPassError> for RhError {
-    fn from(e: RenderPassError) -> Self {
-        Self::VkRenderPassError(Box::new(e))
-    }
-}
-
-impl From<CopyError> for RhError {
-    fn from(e: CopyError) -> Self {
-        Self::VkCopyError(Box::new(e))
-    }
-}
-
-impl From<BufferError> for RhError {
-    fn from(e: BufferError) -> Self {
-        Self::VkBufferError(Box::new(e))
+impl From<OsError> for RhError {
+    fn from(e: OsError) -> Self {
+        Self::WinitOsError(e)
     }
 }

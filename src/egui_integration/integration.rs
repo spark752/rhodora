@@ -18,12 +18,12 @@ use std::sync::Arc;
 use vulkano::{
     command_buffer::AutoCommandBufferBuilder,
     device::Queue,
-    format::{Format, NumericType},
-    image::{ImageViewAbstract, SampleCount},
+    format::{Format, NumericFormat},
+    image::{Image, SampleCount},
     swapchain::{Surface, SurfaceInfo},
+    Validated,
 };
-use winit::event::Event;
-use winit::window::Window;
+use winit::{event::Event, window::Window};
 
 pub struct GuiConfig {
     /// Preferred target image format. This should match the surface format.
@@ -72,9 +72,12 @@ impl Gui {
                 gfx_queue
                     .device()
                     .physical_device()
-                    .surface_formats(&surface, SurfaceInfo::default())?
+                    .surface_formats(&surface, SurfaceInfo::default())
+                    .map_err(Validated::unwrap)?
                     .iter()
-                    .find(|f| f.0.type_color() == Some(NumericType::SRGB))
+                    .find(|f| {
+                        f.0.numeric_format_color() == Some(NumericFormat::SRGB)
+                    })
                     .ok_or(RhError::UnsupportedColourFormat)?
                     .0
             }
@@ -217,7 +220,7 @@ impl Gui {
     /// May return `RhError`
     pub fn register_user_image_view(
         &mut self,
-        image: Arc<dyn ImageViewAbstract + Send + Sync>,
+        image: Arc<Image>,
     ) -> Result<egui::TextureId, RhError> {
         self.renderer.register_image(image)
     }

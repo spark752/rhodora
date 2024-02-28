@@ -16,7 +16,6 @@ use crate::{
     util,
     vertex::{Format, RigidFormat, SkinnedFormat},
 };
-use log::{error, info};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
@@ -30,7 +29,11 @@ use vulkano::{
     pipeline::{
         graphics::vertex_input::Vertex as VertexTrait, PipelineBindPoint,
     },
+    Validated,
 };
+
+#[allow(unused_imports)]
+use log::{error, info, trace};
 
 const M_SET: u32 = 1;
 const TEX_SET: u32 = 2;
@@ -306,6 +309,10 @@ impl Manager {
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+
     // Added index validation to make the function return errors instead
     // of panicing and that made clippy decide it was too long.
     #[allow(clippy::too_many_lines)]
@@ -380,7 +387,9 @@ impl Manager {
             )?
             .clone(),
             [WriteDescriptorSet::buffer(M_BINDING, m_buffer)],
-        )?;
+            [],
+        )
+        .map_err(Validated::unwrap)?;
 
         // CommandBufferBuilder should have a render pass started
         cbb.bind_descriptor_sets(
@@ -388,7 +397,8 @@ impl Manager {
             self.pipelines[pp_index].layout().clone(),
             M_SET, // starting set, higher values also changed
             desc_set,
-        );
+        )
+        .unwrap(); // This is a Box<ValidationError>
 
         // Bind the vertex buffers, whichever vertex format they contain. The
         // enum is unrolled and feed to this helper function that can take
@@ -399,7 +409,9 @@ impl Manager {
             dvb: &DeviceVertexBuffers<U>,
         ) {
             cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
-                .bind_index_buffer(dvb.indices.clone());
+                .unwrap() // `Box<ValidationError>`
+                .bind_index_buffer(dvb.indices.clone())
+                .unwrap(); // `Box<ValidationError>`
         }
         match &self.dvbs[dvb_index] {
             DvbWrapper::Skinned(dvb) => {
@@ -447,11 +459,13 @@ impl Manager {
                     TEX_SET,
                     material.texture_set.clone(),
                 )
+                .unwrap() // `Box<ValidationError>`
                 .push_constants(
                     self.pipelines[pp_index].layout().clone(),
                     0,              // offset (must be multiple of 4)
                     push_constants, // (size must be multiple of 4)
-                );
+                )
+                .unwrap(); // `Box<ValidationError>`
             }
             // Draw
             cbb.draw_indexed(
@@ -460,7 +474,8 @@ impl Manager {
                 sub.first_index,
                 sub.vertex_offset,
                 0, // first_instance
-            )?;
+            )
+            .unwrap(); // This is a `Box<ValidationError>`
         }
         Ok(())
     }
@@ -488,6 +503,7 @@ impl Manager {
             let need_bind = bound_ppi.map_or(true, |i| i != ppi);
             if need_bind {
                 // Bind pipeline
+                //trace!("Binding the pipeline");
                 if ppi < self.pipelines.len() {
                     self.pipelines[ppi].start_pass(
                         cbb,
@@ -506,6 +522,7 @@ impl Manager {
             }
 
             // Draw
+            //trace!("Drawing model_index={model_index}");
             self.draw(model_index, cbb, desc_set_allocator, camera)?;
         }
         Ok(())
