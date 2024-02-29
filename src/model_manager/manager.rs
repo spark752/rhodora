@@ -1,10 +1,12 @@
 use super::{
     dvb_wrapper::DvbWrapper,
-    layout, material,
+    layout,
+    layout::{PushConstantData, LAYOUT_TEX_SET},
+    material,
     material::{PbrMaterial, TexMaterial},
     mesh,
     model::{JointTransforms, Model},
-    pipeline::{Pipeline, PushConstantData, UniformM},
+    pipeline::{Pipeline, UniformM},
 };
 use crate::{
     dvb::DeviceVertexBuffers,
@@ -40,7 +42,7 @@ use vulkano::{
 use log::{debug, error, info, trace};
 
 const M_SET: u32 = 1;
-const TEX_SET: u32 = 2;
+
 const VERTEX_BINDING: u32 = 0;
 const M_BINDING: u32 = 0;
 
@@ -122,7 +124,7 @@ impl Manager {
             // binding the sampler plus texture. It would be nice to share that
             // too eventually, but for now it is only here. As long as the
             // created pipeline is compatible with it that should be ok.
-            let set_layout = layout::create_set(device_access.device)?;
+            let set_layout = layout::create_set_layout(device_access.device)?;
             let pbr_material = material::tex_to_pbr(
                 &tex_material,
                 &manager.set_allocator,
@@ -257,7 +259,7 @@ impl Manager {
         // Process the materials, creating descriptors
         let layout = util::get_layout(
             &self.pipelines[pp_index].graphics,
-            TEX_SET as usize,
+            LAYOUT_TEX_SET as usize,
         )?;
         for m in tex_materials {
             self.materials.push(material::tex_to_pbr(
@@ -510,31 +512,23 @@ impl Manager {
                 })
             };
             let material = &self.materials[lib_mat_id];
-            let push_constants = PushConstantData {
-                diffuse: [
-                    material.diffuse[0],
-                    material.diffuse[1],
-                    material.diffuse[2],
-                    1.0,
-                ],
-                roughness: material.roughness,
-                metalness: material.metalness,
-            };
+
+            // Record material commands
             cbb.bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.pipelines[pp_index].layout().clone(),
-                TEX_SET,
+                LAYOUT_TEX_SET,
                 material.texture_set.clone(),
             )
             .unwrap() // `Box<ValidationError>`
             .push_constants(
                 self.pipelines[pp_index].layout().clone(),
-                0,              // offset (must be multiple of 4)
-                push_constants, // (size must be multiple of 4)
+                0, // offset (must be multiple of 4)
+                push_constants(material),
             )
             .unwrap(); // `Box<ValidationError>`
 
-            // Draw
+            // Record drawing command
             cbb.draw_indexed(
                 sub.index_count,
                 1, // instance_count
@@ -542,7 +536,7 @@ impl Manager {
                 sub.vertex_offset,
                 0, // first_instance
             )
-            .unwrap(); // This is a `Box<ValidationError>`
+            .unwrap(); // `Box<ValidationError>`
         }
         Ok(())
     }
@@ -593,5 +587,21 @@ impl Manager {
             self.draw(model_index, cbb, desc_set_allocator, camera)?;
         }
         Ok(())
+    }
+}
+
+/// Private helper to assemble push constants
+fn push_constants(material: &PbrMaterial) -> PushConstantData {
+    PushConstantData {
+        diffuse: [
+            material.diffuse[0],
+            material.diffuse[1],
+            material.diffuse[2],
+            1.0,
+        ],
+        roughness: material.roughness,
+        metalness: material.metalness,
+        // TODO: Add visualization stuff here somehow
+        ..Default::default()
     }
 }

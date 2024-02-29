@@ -50,7 +50,6 @@ const VPL_BINDING: u32 = 0;
 // per frame, the other for model matrix which is different for each model
 pub type UniformVPL = skinned_vs::VPL;
 pub type UniformM = skinned_vs::M;
-pub type PushConstantData = pbr_fs::PushConstantData;
 
 pub struct Pipeline {
     pub style: Style,
@@ -97,23 +96,32 @@ fn build_vk_pipeline<T: Vertex>(
         // material. That is done using `layout::create_set`. Ideally that one
         // would be shared or another created the same way, but that doesn't
         // cover the other descriptor sets so this is a possible TODO.
-        let layout = PipelineLayout::new(
-            device.clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                .into_pipeline_layout_create_info(device.clone())?,
-        )
-        .map_err(Validated::unwrap)?;
-
-        // Log the descriptor set layouts for debug purposes
-        /*
-        {
-            debug!("Pipeline set_layouts bindings:");
-            let sls = layout.set_layouts();
-            for sl in sls {
-                debug!("{:?}", sl.bindings());
-            }
-        }
-        */
+        let layout = {
+            let set_info =
+                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages);
+            debug!("PipelineDescriptorSetLayoutCreateInfo={:?}", set_info);
+            PipelineLayout::new(
+                device.clone(),
+                set_info.into_pipeline_layout_create_info(device.clone())?,
+            )
+            .map_err(Validated::unwrap)?
+            /*Debug info is something like this:
+            VPL {0: DescriptorSetLayoutBinding { binding_flags: empty(),
+                descriptor_type: UniformBuffer, descriptor_count: 1,
+                stages: VERTEX | FRAGMENT, immutable_samplers: [],
+                _ne: NonExhaustive(()) }}
+            M {0: DescriptorSetLayoutBinding { binding_flags: empty(),
+                descriptor_type: UniformBuffer, descriptor_count: 1,
+                stages: VERTEX, immutable_samplers: [],
+                _ne: NonExhaustive(()) }}
+            tex {0: DescriptorSetLayoutBinding { binding_flags: empty(),
+                descriptor_type: CombinedImageSampler, descriptor_count: 1,
+                stages: FRAGMENT, immutable_samplers: [],
+                _ne: NonExhaustive(()) }}
+            push constants:
+                [PushConstantRange { stages: FRAGMENT, offset: 0, size: 24 }]
+            */
+        };
 
         let subpass = PipelineRenderingCreateInfo {
             color_attachment_formats: vec![Some(render_format.colour_format)],

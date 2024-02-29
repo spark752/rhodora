@@ -18,11 +18,6 @@
     #define SHOW_METALNESS 3    // Overrides lighting
     #define SHOW_MIPMAP 4       // Overrides lighting
     #define SHOW_DEPTH 5        // Overrides lighting
-
-    // TODO: Move these to push constants
-    uint ambient_mode = USE_AMBIENT;
-    uint specular_mode = USE_SPECULAR;
-    uint override_mode = SHOW_DEPTH;
 #endif
 
 // Inputs from vertex shaders. Trying to pass these as a struct or block in
@@ -45,6 +40,9 @@ layout(push_constant) uniform PushConstantData {
     vec4 diffuse; // Multiplied by diffuse texture contents (alpha not used)
     float roughness;
     float metalness;
+    uint ambient_mode;  // Used only for VISUALIZE
+    uint specular_mode; // Used only for VISUALIZE
+    uint override_mode; // Used only for VISUALIZE
 } material;
 
 // Output
@@ -122,9 +120,9 @@ void main() {
         // since the input light level is just an arbitrary value it isn't
         // really necessary.
         #ifdef VISUALIZE
-            if (specular_mode == NO_SPECULAR) {
+            if (material.specular_mode == NO_SPECULAR) {
                 Lout += (kD * albedo / PI) * radiance * NdotL;
-            } else if (specular_mode == SPECULAR_ONLY) {
+            } else if (material.specular_mode == SPECULAR_ONLY) {
                 Lout += specular * radiance * NdotL;
             } else {
                 Lout += (kD * albedo / PI + specular) * radiance * NdotL;
@@ -139,9 +137,9 @@ void main() {
     vec3 ambient = vpl.ambient.rgb * albedo * vpl.ambient.a;
     #ifdef VISUALIZE
         vec3 shade = Lout + ambient;
-        if (ambient_mode == NO_AMBIENT) {
+        if (material.ambient_mode == NO_AMBIENT) {
             shade = Lout;
-        } else if (ambient_mode == AMBIENT_ONLY) {
+        } else if (material.ambient_mode == AMBIENT_ONLY) {
             shade = ambient;
         }
     #else
@@ -160,7 +158,7 @@ void main() {
             vec3(1.0, 0.0, 1.0), // V
             vec3(0.0, 0.0, 0.0)  // K
         };
-        switch (override_mode) {
+        switch (material.override_mode) {
             case SHOW_NORMALS:
                 shade = vec3((f_normal + 1.0) * 0.5);
                 break;
