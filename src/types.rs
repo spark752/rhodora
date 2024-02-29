@@ -23,7 +23,7 @@ pub struct RenderFormat {
 /// allocators can be used.
 pub struct DeviceAccess<'a, T> {
     pub device: Arc<Device>,
-    pub set_allocator: &'a StandardDescriptorSetAllocator,
+    pub set_allocator: Arc<StandardDescriptorSetAllocator>,
     pub cbb: &'a mut AutoCommandBufferBuilder<T>,
 }
 

@@ -1,6 +1,6 @@
 use super::{
     dvb_wrapper::DvbWrapper,
-    material,
+    layout, material,
     material::{PbrMaterial, TexMaterial},
     mesh,
     model::{JointTransforms, Model},
@@ -8,11 +8,11 @@ use super::{
 };
 use crate::{
     dvb::DeviceVertexBuffers,
-    mesh_import::{Batch, Material, MeshLoaded, Style},
+    mesh_import::{Batch, ImportMaterial, MeshLoaded, Style},
     pbr_lights::PbrLightTrait,
     rh_error::RhError,
     texture::Manager as TextureManager,
-    types::{CameraTrait, RenderFormat},
+    types::{CameraTrait, DeviceAccess, RenderFormat},
     util,
     vertex::{Format, RigidFormat, SkinnedFormat},
 };
@@ -25,6 +25,10 @@ use vulkano::{
         WriteDescriptorSet,
     },
     device::Device,
+    image::sampler::{
+        Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode, LOD_CLAMP_NONE,
+    },
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
         graphics::vertex_input::Vertex as VertexTrait, PipelineBindPoint,
@@ -33,7 +37,7 @@ use vulkano::{
 };
 
 #[allow(unused_imports)]
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 
 const M_SET: u32 = 1;
 const TEX_SET: u32 = 2;
@@ -50,6 +54,7 @@ pub struct Manager {
     mem_allocator: Arc<StandardMemoryAllocator>,
     set_allocator: Arc<StandardDescriptorSetAllocator>,
     render_format: RenderFormat,
+    sampler: Arc<Sampler>,
 }
 
 impl Manager {
@@ -57,25 +62,78 @@ impl Manager {
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn new(
-        device: Arc<Device>,
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+    pub fn new<T>(
+        device_access: DeviceAccess<T>,
         mem_allocator: Arc<StandardMemoryAllocator>,
-        set_allocator: Arc<StandardDescriptorSetAllocator>,
-        render_format: &RenderFormat,
+        render_format: RenderFormat,
     ) -> Result<Self, RhError> {
+        // TextureManager lets us share textures to avoid memory waste
         let texture_manager =
             Arc::new(TextureManager::new(mem_allocator.clone()));
-        Ok(Self {
+
+        // A default sampler for handling albedo textures
+        let sampler = Sampler::new(
+            device_access.device.clone(),
+            SamplerCreateInfo {
+                mag_filter: Filter::Linear,
+                min_filter: Filter::Linear,
+                address_mode: [SamplerAddressMode::Repeat; 3],
+                mipmap_mode: SamplerMipmapMode::Linear,
+                lod: 0.0..=LOD_CLAMP_NONE,
+                ..Default::default()
+            },
+        )
+        .map_err(Validated::unwrap)?;
+
+        // Create the ModelManager now so we can use a member method to modify
+        // it before returning
+        let mut manager = Self {
             models: Vec::new(),
             pipelines: Vec::new(),
             dvbs: Vec::new(),
             materials: Vec::new(),
             texture_manager,
-            device,
+            device: device_access.device.clone(),
             mem_allocator,
-            set_allocator,
-            render_format: *render_format,
-        })
+            set_allocator: device_access.set_allocator,
+            render_format,
+            sampler: sampler.clone(),
+        };
+
+        // Create a default material in index 0 to always have available.
+        // Material flow is complicated:
+        // `ImportMaterial` is a material without a texture loaded.
+        // `TexMaterial` has a texture loaded but is not in a descriptor set.
+        // `PbrMaterial` is in a descriptor set and is what we need.
+        // This requires loading a default texture which requires writing
+        // commands to a buffer and then having somebody execute it.
+        // Fortunately the system is already doing that for postprocess
+        // initialization so we can put commands in there too.
+        let material = {
+            let import_material = ImportMaterial::default();
+            let tex_material =
+                manager.load_material(&import_material, device_access.cbb)?;
+
+            // Creating the `PbrMaterial` needs a `Sampler` so one was added to
+            // `Self`. Sharing is good. It also needs a `DescriptorSetLayout`
+            // binding the sampler plus texture. It would be nice to share that
+            // too eventually, but for now it is only here. As long as the
+            // created pipeline is compatible with it that should be ok.
+            let set_layout = layout::create_set(device_access.device)?;
+            let pbr_material = material::tex_to_pbr(
+                &tex_material,
+                &manager.set_allocator,
+                &sampler,
+                &set_layout,
+            );
+            pbr_material?
+        };
+        manager.materials.push(material);
+
+        Ok(manager)
     }
 
     /// Access the `TextureManager` owned by this `ModelManager`
@@ -97,6 +155,7 @@ impl Manager {
             self.device.clone(),
             self.mem_allocator.clone(),
             &self.render_format,
+            self.sampler.clone(),
         )
     }
 
@@ -252,7 +311,7 @@ impl Manager {
     /// May return `RhError`
     fn load_material<T>(
         &mut self,
-        m: &Material,
+        m: &ImportMaterial,
         cbb: &mut AutoCommandBufferBuilder<T>,
     ) -> Result<TexMaterial, RhError> {
         let filename = &m.colour_filename;
@@ -438,35 +497,43 @@ impl Manager {
             }
             let sub = self.models[model_index].mesh.submeshes[*i];
 
-            // If the submesh has a material then use it
-            if let Some(mat_id) = sub.material_id {
-                let lib_mat_id =
-                    mat_id + self.models[model_index].material_offset;
-                let material = &self.materials[lib_mat_id];
-                let push_constants = PushConstantData {
-                    diffuse: [
-                        material.diffuse[0],
-                        material.diffuse[1],
-                        material.diffuse[2],
-                        1.0,
-                    ],
-                    roughness: material.roughness,
-                    metalness: material.metalness,
-                };
-                cbb.bind_descriptor_sets(
-                    PipelineBindPoint::Graphics,
-                    self.pipelines[pp_index].layout().clone(),
-                    TEX_SET,
-                    material.texture_set.clone(),
-                )
-                .unwrap() // `Box<ValidationError>`
-                .push_constants(
-                    self.pipelines[pp_index].layout().clone(),
-                    0,              // offset (must be multiple of 4)
-                    push_constants, // (size must be multiple of 4)
-                )
-                .unwrap(); // `Box<ValidationError>`
-            }
+            // If the submesh has a material then use it, otherwise use
+            // material index 0 which has been created as a default
+            let lib_mat_id = {
+                sub.material_id.map_or(0, |mat_id| {
+                    let i = mat_id + self.models[model_index].material_offset;
+                    if i < self.materials.len() {
+                        i
+                    } else {
+                        0
+                    }
+                })
+            };
+            let material = &self.materials[lib_mat_id];
+            let push_constants = PushConstantData {
+                diffuse: [
+                    material.diffuse[0],
+                    material.diffuse[1],
+                    material.diffuse[2],
+                    1.0,
+                ],
+                roughness: material.roughness,
+                metalness: material.metalness,
+            };
+            cbb.bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.pipelines[pp_index].layout().clone(),
+                TEX_SET,
+                material.texture_set.clone(),
+            )
+            .unwrap() // `Box<ValidationError>`
+            .push_constants(
+                self.pipelines[pp_index].layout().clone(),
+                0,              // offset (must be multiple of 4)
+                push_constants, // (size must be multiple of 4)
+            )
+            .unwrap(); // `Box<ValidationError>`
+
             // Draw
             cbb.draw_indexed(
                 sub.index_count,

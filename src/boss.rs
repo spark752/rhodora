@@ -166,30 +166,6 @@ impl Boss {
         let depth_format =
             util::find_depth_format(window.physical(), &depth_candidates)?;
 
-        // Create postprocess layer
-        let mut cbb = util::create_primary_cbb(
-            &memory.command_buffer_allocator,
-            window.graphics_queue(),
-        )
-        .map_err(Validated::unwrap)?;
-        let postprocess = PostProcess::new(
-            &DeviceAccess {
-                device: window.device().clone(),
-                set_allocator: &memory.set_allocator,
-                cbb: &mut cbb,
-            },
-            memory.memory_allocator.clone(),
-            swapchain.image_extent(),
-            colour_format, // output format from main rendering pass
-            swapchain.image_format(), // output format from postprocessing
-            None,          // sampler option, None = create automatically
-        )?;
-        let cb = cbb.build().map_err(Validated::unwrap)?;
-        let future = cb
-            .execute(window.graphics_queue().clone())?
-            .then_signal_fence_and_flush()
-            .map_err(Validated::unwrap)?;
-
         // Create a dynamic viewport
         let dimensions = window.dimensions()?;
         let viewport = Viewport {
@@ -218,19 +194,51 @@ impl Boss {
             )?)
         };
 
+        // Collect data into a convenient `RenderFormat`
         let render_format = RenderFormat {
             colour_format,
             depth_format,
             sample_count,
         };
 
+        // Create a command buffer builder. Some modules will record commands to
+        // this during initialization.
+        let mut cbb = util::create_primary_cbb(
+            &memory.command_buffer_allocator,
+            window.graphics_queue(),
+        )
+        .map_err(Validated::unwrap)?;
+        let device_access = DeviceAccess {
+            device: window.device().clone(),
+            set_allocator: memory.set_allocator.clone(),
+            cbb: &mut cbb,
+        };
+
+        // Create the postprocess layer
+        let postprocess = PostProcess::new(
+            &device_access,
+            memory.memory_allocator.clone(),
+            swapchain.image_extent(),
+            colour_format, // output format from main rendering pass
+            swapchain.image_format(), // output format from postprocessing
+            None,          // sampler option, None = create automatically
+        )?;
+
         // Create a ModelManager
         let model_manager = ModelManager::new(
-            window.device().clone(),
+            device_access,
             memory.memory_allocator.clone(),
-            memory.set_allocator.clone(),
-            &render_format,
+            render_format,
         )?;
+
+        // No more commands need to be recorded, so execute the command buffer.
+        // Initialization of unrelated modules could continue after this
+        // (if there were any).
+        let cb = cbb.build().map_err(Validated::unwrap)?;
+        let future = cb
+            .execute(window.graphics_queue().clone())?
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)?;
 
         // Wait for the GPU to finish the commands submitted for the
         // postprocess layer creation. Not very efficient but it shouldn't
@@ -865,7 +873,7 @@ impl Boss {
         &self,
         cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<TransferFuture, RhError> {
-        trace!("Staring graphics queue transfer");
+        trace!("Starting graphics queue transfer");
         util::start_transfer(cbb, self.graphics_queue().clone())
     }
 

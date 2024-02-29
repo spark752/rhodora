@@ -18,10 +18,7 @@ use vulkano::{
         WriteDescriptorSet,
     },
     device::Device,
-    image::sampler::{
-        Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
-        SamplerMipmapMode, LOD_CLAMP_NONE,
-    },
+    image::sampler::Sampler,
     memory::allocator::{MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::PipelineBindPoint,
     pipeline::{
@@ -44,7 +41,7 @@ use vulkano::{
 };
 
 #[allow(unused_imports)]
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 
 const VPL_SET: u32 = 0;
 const VPL_BINDING: u32 = 0;
@@ -93,12 +90,30 @@ fn build_vk_pipeline<T: Vertex>(
             PipelineShaderStageCreateInfo::new(fs),
         ];
 
+        // Pipeline layout could potentially be shared. It collects some
+        // descriptor set layouts which could also be shared.
+        // CAUTION: The descriptor set for the albedo texture is deduced from
+        // the shader. It must match the one manually created for the default
+        // material. That is done using `layout::create_set`. Ideally that one
+        // would be shared or another created the same way, but that doesn't
+        // cover the other descriptor sets so this is a possible TODO.
         let layout = PipelineLayout::new(
             device.clone(),
             PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
                 .into_pipeline_layout_create_info(device.clone())?,
         )
         .map_err(Validated::unwrap)?;
+
+        // Log the descriptor set layouts for debug purposes
+        /*
+        {
+            debug!("Pipeline set_layouts bindings:");
+            let sls = layout.set_layouts();
+            for sl in sls {
+                debug!("{:?}", sl.bindings());
+            }
+        }
+        */
 
         let subpass = PipelineRenderingCreateInfo {
             color_attachment_formats: vec![Some(render_format.colour_format)],
@@ -147,6 +162,7 @@ impl Pipeline {
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
         render_format: &RenderFormat,
+        sampler: Arc<Sampler>,
     ) -> Result<Self, RhError> {
         // Vulkano pipeline is build based on the style, which determines the
         // shaders and the expected vertex format
@@ -165,35 +181,17 @@ impl Pipeline {
                 Style::Rigid => build_vk_pipeline::<RigidFormat>(
                     device.clone(),
                     render_format,
-                    &rigid_vs::load(device.clone())
-                        .map_err(Validated::unwrap)?,
+                    &rigid_vs::load(device).map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
                 Style::Skinned => build_vk_pipeline::<SkinnedFormat>(
                     device.clone(),
                     render_format,
-                    &skinned_vs::load(device.clone())
-                        .map_err(Validated::unwrap)?,
+                    &skinned_vs::load(device).map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
             }
         }?;
-
-        // Probably don't need to create a new sampler each time since all
-        // of these are the same
-        let sampler = Sampler::new(
-            device,
-            SamplerCreateInfo {
-                mag_filter: Filter::Linear,
-                min_filter: Filter::Linear,
-                address_mode: [SamplerAddressMode::Repeat; 3],
-                mipmap_mode: SamplerMipmapMode::Linear,
-                lod: 0.0..=LOD_CLAMP_NONE,
-                //mip_lod_bias: -2.0, // for testing, negative = use larger map
-                ..Default::default()
-            },
-        )
-        .map_err(Validated::unwrap)?;
 
         // These need to be customizable somehow
         // For vulkano 0.34 these need to have `memory_type_filter` set

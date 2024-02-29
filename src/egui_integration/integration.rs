@@ -237,13 +237,11 @@ impl Gui {
     pub fn register_user_image(
         &mut self,
         image_file_bytes: &[u8],
-        format: vulkano::format::Format,
     ) -> Result<egui::TextureId, RhError> {
         let image = immutable_texture_from_file(
             self.renderer.allocators(),
             self.renderer.queue(),
             image_file_bytes,
-            format,
         )
         .expect("Failed to create image");
         self.renderer.register_image(image)
@@ -258,14 +256,12 @@ impl Gui {
         &mut self,
         image_byte_data: &[u8],
         dimensions: [u32; 2],
-        format: vulkano::format::Format,
     ) -> Result<egui::TextureId, RhError> {
         let image = immutable_texture_from_bytes(
             self.renderer.allocators(),
             self.renderer.queue(),
             image_byte_data,
             dimensions,
-            format,
         )
         .expect("Failed to create image");
         self.renderer.register_image(image)

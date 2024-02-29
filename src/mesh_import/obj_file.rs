@@ -1,4 +1,6 @@
-use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
+use super::types::{
+    FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh,
+};
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
 use log::{error, info};
@@ -128,7 +130,7 @@ pub fn process_obj(
     let mut materials = Vec::new();
     for m in &tobj_materials.unwrap_or_default() {
         info!("Processing material {:?}", m.name);
-        let material = Material {
+        let material = ImportMaterial {
             colour_filename: m.diffuse_texture.clone(),
             diffuse: m.diffuse,
             roughness: m

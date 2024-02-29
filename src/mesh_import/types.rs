@@ -9,12 +9,24 @@ pub struct Submesh {
     pub material_id: Option<usize>,
 }
 
-#[derive(Default)]
-pub struct Material {
+/// Holds an imported material. This format is used when reading from a file or
+/// creating manually before the texture has been loaded.
+pub struct ImportMaterial {
     pub colour_filename: String, // Colour texture for diffuse
     pub diffuse: [f32; 3],       // Multiplier for diffuse
     pub roughness: f32,
     pub metalness: f32,
+}
+
+impl Default for ImportMaterial {
+    fn default() -> Self {
+        Self {
+            colour_filename: String::new(),
+            diffuse: [1.0, 1.0, 1.0],
+            roughness: 0.5,
+            metalness: 0.0,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -39,7 +51,7 @@ impl Default for FileToLoad {
 #[derive(Default)]
 pub struct MeshLoaded {
     pub submeshes: Vec<Submesh>,
-    pub materials: Vec<Material>,
+    pub materials: Vec<ImportMaterial>,
     pub order_option: Option<Vec<usize>>,
 }
 

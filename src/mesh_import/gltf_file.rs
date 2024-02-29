@@ -1,4 +1,6 @@
-use super::types::{FileToLoad, ImportVertex, Material, MeshLoaded, Submesh};
+use super::types::{
+    FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh,
+};
 use crate::{
     rh_error::RhError,
     vertex::{IndexBuffer, InterBuffer},
@@ -309,9 +311,13 @@ pub fn load(
     })
 }
 
-fn load_materials(base_path: &Path, document: &Document) -> Vec<Material> {
+fn load_materials(
+    base_path: &Path,
+    document: &Document,
+) -> Vec<ImportMaterial> {
     // Materials are currently handled separately because that's how the .obj
     // library works. It could be improved if we focus on glTF.
+    info!("Materials={}", document.materials().count());
     let mut materials = Vec::new();
     for m in document.materials() {
         let pbr = m.pbr_metallic_roughness();
@@ -342,7 +348,7 @@ fn load_materials(base_path: &Path, document: &Document) -> Vec<Material> {
             metalness,
         );
 
-        let material = Material {
+        let material = ImportMaterial {
             colour_filename,
             diffuse,
             roughness,

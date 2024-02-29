@@ -182,7 +182,7 @@ impl PostProcess {
         };
         let (image_view, descriptor_set) = Self::create_target(
             mem_allocator,
-            device_access.set_allocator,
+            &device_access.set_allocator,
             dimensions,
             input_format,
             &pipeline,

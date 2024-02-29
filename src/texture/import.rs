@@ -83,11 +83,37 @@ fn load_png_impl<T>(
     mem_allocator: Arc<(dyn MemoryAllocator)>,
     cbb: &mut AutoCommandBufferBuilder<T>,
 ) -> Result<Arc<ImageView>, RhError> {
-    let (width, height) = image_data.dimensions();
-    let extent = [width, height, 1];
-    let format = Format::R8G8B8A8_SRGB;
+    let dimensions = image_data.dimensions();
+    let image = image_from_bytes(
+        &image_data.into_raw(),
+        dimensions.into(),
+        mem_allocator,
+        cbb,
+    )?;
+    let image_view =
+        ImageView::new_default(image).map_err(Validated::unwrap)?;
+    Ok(image_view)
+}
 
-    // Create vulkano data buffer with the image
+/// Creates a vulkano `Image` from a collection of bytes. This is a basic
+/// `Format::R8G8B8A8_SRGB` image with no mipmaps. A vulkano `Buffer` is
+/// created, the data is copied into it, and commands are recorded to transfer
+/// the data to an `Image`. The commands must be executed before the `Image`
+/// can be used. The caller is also responsible for creating an `ImageView`
+/// if one is needed.
+///
+/// # Errors
+/// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+pub fn image_from_bytes<T>(
+    byte_data: &[u8],
+    dimensions: [u32; 2],
+    mem_allocator: Arc<(dyn MemoryAllocator)>,
+    cbb: &mut AutoCommandBufferBuilder<T>,
+) -> Result<Arc<Image>, RhError> {
+    // Create vulkano data buffer from the image data
     let data_buffer = Buffer::from_iter(
         mem_allocator.clone(),
         BufferCreateInfo {
@@ -99,7 +125,7 @@ fn load_png_impl<T>(
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        image_data.into_raw(),
+        byte_data.iter().copied(),
     )
     .map_err(Validated::unwrap)?;
 
@@ -107,10 +133,8 @@ fn load_png_impl<T>(
     let image = Image::new(
         mem_allocator,
         ImageCreateInfo {
-            format,
-            extent,
-            array_layers: 1, // Default but listed here for clarity
-            mip_levels: 1,   // Default but listed here for clarity
+            format: Format::R8G8B8A8_SRGB,
+            extent: [dimensions[0], dimensions[1], 1],
             usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
             ..Default::default()
         },
@@ -125,9 +149,5 @@ fn load_png_impl<T>(
     ))
     .unwrap(); // This is a Box<ValidationError>
 
-    // Create a vulkano image view
-    let image_view =
-        ImageView::new_default(image).map_err(Validated::unwrap)?;
-
-    Ok(image_view)
+    Ok(image)
 }
