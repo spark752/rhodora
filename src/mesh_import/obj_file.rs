@@ -116,7 +116,7 @@ pub fn process_obj(
             first_index,
             vertex_offset,
             vertex_count,
-            material_id: mesh.material_id,
+            material_id: mesh.material_id.unwrap_or(0),
         });
 
         // Prepare for next mesh

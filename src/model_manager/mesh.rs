@@ -37,7 +37,7 @@ pub fn convert_batch_meshes(
                 first_index: sub.first_index + next_index,
                 vertex_offset: sub.vertex_offset + next_vertex,
                 vertex_count: sub.vertex_count,
-                material_id: sub.material_id.map(|id| id + next_material_id),
+                material_id: sub.material_id + next_material_id,
             });
         }
 

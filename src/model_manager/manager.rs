@@ -363,69 +363,138 @@ impl Manager {
         &self.models[index].matrix
     }
 
-    /// Draws a given model. You have to bind the correct pipeline first.
+    /// Renders all the models. Provide a command buffer which has had
+    /// `begin_rendering` and `set_viewport` called on it.
     ///
-    /// This may be removed in the future. Applications
-    /// should prefer to use `draw_all` to draw all of the models.
+    /// # Errors
+    /// May return `RhError`
+    pub fn draw_all<T>(
+        &self,
+        cbb: &mut AutoCommandBufferBuilder<T>,
+        desc_set_allocator: &StandardDescriptorSetAllocator,
+        camera: &impl CameraTrait,
+        lights: &impl PbrLightTrait,
+    ) -> Result<(), RhError> {
+        let mut bound_ppi: Option<usize> = None; // Index of bound pipeline
+        let mut bound_dvb: Option<usize> = None; // Index of bound DVBs
+
+        // There is no sorting here but because we load models in batches,
+        // a series of models will use the same DVBs and pipelines.
+        for model_index in 0..self.models.len() {
+            // If not visible, draw nothing. This is a user controllable flag.
+            // In the future additial conditions may be added for culling.
+            if !self.models[model_index].visible {
+                return Ok(());
+            }
+
+            // Check if we need to bind a new pipeline for this model
+            let pp_index = self.models[model_index].pipeline_index;
+            let need_bind = bound_ppi.map_or(true, |i| i != pp_index);
+            if need_bind {
+                // Bind pipeline
+                //trace!("Binding the pipeline");
+                if pp_index < self.pipelines.len() {
+                    self.pipelines[pp_index].start_pass(
+                        cbb,
+                        desc_set_allocator,
+                        camera,
+                        lights,
+                    )?;
+                    bound_ppi = Some(pp_index);
+                } else {
+                    error!(
+                        "Model {} contains invalid pipeline_index {}",
+                        model_index, pp_index
+                    );
+                    return Err(RhError::PipelineError);
+                }
+            }
+
+            // Check if we need to bind new DVBs for this model
+            let dvb_index = self.models[model_index].dvb_index;
+            let need_bind = bound_dvb.map_or(true, |i| i != dvb_index);
+            if need_bind {
+                // Bind DVBs
+                //trace!("Binding DVBs");
+                if dvb_index < self.dvbs.len() {
+                    self.bind_dvbs(dvb_index, cbb);
+                    bound_dvb = Some(dvb_index);
+                } else {
+                    error!(
+                        "Model {} contains invalid dvb_index {}",
+                        model_index, dvb_index
+                    );
+                    return Err(RhError::RenderPassError);
+                }
+            }
+
+            // Draw
+            //trace!("Drawing model_index={model_index}");
+            self.draw_impl(
+                model_index,
+                pp_index,
+                cbb,
+                desc_set_allocator,
+                camera,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Helper function for binding dvbs
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+    fn bind_dvbs<T>(
+        &self,
+        dvb_index: usize, // Caller checks if it is valid
+        cbb: &mut AutoCommandBufferBuilder<T>,
+    ) {
+        // Bind the vertex buffers, whichever vertex format they contain. The
+        // enum is unrolled and feed to this helper function that can take
+        // generics (closures can't).
+        fn bind<T, U: VertexTrait>(
+            cbb: &mut AutoCommandBufferBuilder<T>,
+            dvb: &DeviceVertexBuffers<U>,
+        ) {
+            cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
+                .unwrap() // `Box<ValidationError>`
+                .bind_index_buffer(dvb.indices.clone())
+                .unwrap(); // `Box<ValidationError>`
+        }
+        match &self.dvbs[dvb_index] {
+            DvbWrapper::Skinned(dvb) => {
+                bind(cbb, dvb);
+            }
+            DvbWrapper::Rigid(dvb) => {
+                bind(cbb, dvb);
+            } // Adding more vertex formats will requre more duplicate code here
+              // but that will cause the build to fail so we will know that.
+        }
+    }
+
+    /// Helper function used for drawing models
     ///
     /// # Errors
     /// May return `RhError`
     ///
     /// # Panics
     /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
-
-    // Added index validation to make the function return errors instead
-    // of panicing and that made clippy decide it was too long.
     #[allow(clippy::too_many_lines)]
-    pub fn draw<T>(
+    fn draw_impl<T>(
         &self,
         model_index: usize,
+        pp_index: usize,
         cbb: &mut AutoCommandBufferBuilder<T>,
         desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
-        // Validate
-        if model_index >= self.models.len() {
-            error!(
-                "model_index={} with len={}",
-                model_index,
-                self.models.len()
-            );
-            return Err(RhError::IndexTooLarge);
-        }
+        // We know that model_index and pipeline_index are valid because
+        // the caller checks them and also binds appropriate stuff.
 
-        // If not visible, draw nothing
-        if !self.models[model_index].visible {
-            return Ok(());
-        }
-
-        // Get the pipeline and validate
-        let pp_index = self.models[model_index].pipeline_index;
-        if pp_index >= self.pipelines.len() {
-            error!(
-                "model_index={} uses pipeline_index={} with len={}",
-                model_index,
-                pp_index,
-                self.pipelines.len()
-            );
-            return Err(RhError::IndexTooLarge);
-        }
-
-        // Get the DVB and validate
-        let dvb_index = self.models[model_index].dvb_index;
-        if dvb_index >= self.dvbs.len() {
-            error!(
-                "model_index={} uses dvb_index={} with len={}",
-                model_index,
-                dvb_index,
-                self.dvbs.len()
-            );
-            return Err(RhError::IndexTooLarge);
-        }
-
-        // Uniform buffer for model matrix and texture is in descriptor set 1
-        // since this will change for each model and updating a descriptor set
-        // unbinds all of those with higher numbers
+        // Uniform buffer for model matrix should be in a descriptor set
+        // numbered between pass specific stuff and submesh specific stuff since
+        // binding will unbind higher numbered sets.
         let m_buffer = {
             // `model_view` is for converting positions to view space.
             // It is also used for normals because non-uniform scaling is not
@@ -461,33 +530,12 @@ impl Manager {
         )
         .unwrap(); // This is a Box<ValidationError>
 
-        // Bind the vertex buffers, whichever vertex format they contain. The
-        // enum is unrolled and feed to this helper function that can take
-        // generics (closures can't).
-        #[allow(clippy::items_after_statements)]
-        fn bind_dvbs<T, U: VertexTrait>(
-            cbb: &mut AutoCommandBufferBuilder<T>,
-            dvb: &DeviceVertexBuffers<U>,
-        ) {
-            cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
-                .unwrap() // `Box<ValidationError>`
-                .bind_index_buffer(dvb.indices.clone())
-                .unwrap(); // `Box<ValidationError>`
-        }
-        match &self.dvbs[dvb_index] {
-            DvbWrapper::Skinned(dvb) => {
-                bind_dvbs(cbb, dvb);
-            }
-            DvbWrapper::Rigid(dvb) => {
-                bind_dvbs(cbb, dvb);
-            } // Adding more vertex formats will requre more duplicate code here
-              // but that will cause the build to fail so we will know that.
-        }
-
         // All of the submeshes are in the buffers and share a model matrix
         // but they do need separate textures. They also have a rendering
         // order that should be used instead of as stored.
         for i in &self.models[model_index].mesh.order {
+            // FIXME Can we do this validation at loading time and be sure
+            // it is always valid?
             if *i >= self.models[model_index].mesh.submeshes.len() {
                 error!(
                     "model_index={} uses submesh={} with len={}",
@@ -499,19 +547,16 @@ impl Manager {
             }
             let sub = self.models[model_index].mesh.submeshes[*i];
 
-            // If the submesh has a material then use it, otherwise use
-            // material index 0 which has been created as a default
-            let lib_mat_id = {
-                sub.material_id.map_or(0, |mat_id| {
-                    let i = mat_id + self.models[model_index].material_offset;
-                    if i < self.materials.len() {
-                        i
-                    } else {
-                        0
-                    }
-                })
+            // Get the material
+            let material = {
+                let lib_mat_id =
+                    self.models[model_index].material_offset + sub.material_id;
+                if lib_mat_id < self.materials.len() {
+                    &self.materials[lib_mat_id]
+                } else {
+                    &self.materials[0] // Default material
+                }
             };
-            let material = &self.materials[lib_mat_id];
 
             // Record material commands
             cbb.bind_descriptor_sets(
@@ -537,54 +582,6 @@ impl Manager {
                 0, // first_instance
             )
             .unwrap(); // `Box<ValidationError>`
-        }
-        Ok(())
-    }
-
-    /// Renders all the models. Provide a command buffer which has had
-    /// `begin_rendering` and `set_viewport` called on it.
-    ///
-    /// # Errors
-    /// May return `RhError`
-    pub fn draw_all<T>(
-        &self,
-        cbb: &mut AutoCommandBufferBuilder<T>,
-        desc_set_allocator: &StandardDescriptorSetAllocator,
-        camera: &impl CameraTrait,
-        lights: &impl PbrLightTrait,
-    ) -> Result<(), RhError> {
-        let mut bound_ppi: Option<usize> = None; // Index of bound pipeline
-
-        // There is no sorting here so we could potentially be switching
-        // pipelines more often then needed. This can be avoided by loading
-        // the batches in a logical order.
-        for model_index in 0..self.models.len() {
-            // Check if we need to bind a new pipeline for this model
-            let ppi = self.models[model_index].pipeline_index;
-            let need_bind = bound_ppi.map_or(true, |i| i != ppi);
-            if need_bind {
-                // Bind pipeline
-                //trace!("Binding the pipeline");
-                if ppi < self.pipelines.len() {
-                    self.pipelines[ppi].start_pass(
-                        cbb,
-                        desc_set_allocator,
-                        camera,
-                        lights,
-                    )?;
-                    bound_ppi = Some(ppi);
-                } else {
-                    error!(
-                        "Model {} contains invalid pipeline_index {}",
-                        model_index, ppi
-                    );
-                    return Err(RhError::PipelineError);
-                }
-            }
-
-            // Draw
-            //trace!("Drawing model_index={model_index}");
-            self.draw(model_index, cbb, desc_set_allocator, camera)?;
         }
         Ok(())
     }

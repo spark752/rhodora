@@ -290,7 +290,7 @@ pub fn load(
                 first_index,
                 vertex_offset,
                 vertex_count,
-                material_id: p.material().index(),
+                material_id: p.material().index().unwrap_or(0),
             });
 
             // Prepare for next submesh

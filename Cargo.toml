@@ -7,6 +7,9 @@ description = "Experimental Vulkan based rendering engine"
 readme = "README.md"
 repository = "https://github.com/spark752/rhodora"
 
+[features]
+visualize = []
+
 # Enable a little optimization in debug mode
 [profile.dev]
 opt-level = 1
@@ -19,23 +22,20 @@ string_to_string = "deny"
 panic = "deny"
 
 [dependencies]
+ahash = "0.8.1"
+bytemuck = "1.12.3"
+egui = "0.21.0"
+egui-winit = "0.21.0"
+gltf = { version = "1.4.0", features = ["import", "names", "utils"] }
+image = { version = "0.24.0", default-features = false, features = ["png"] }
+log = "0.4.8"
+nalgebra-glm = "0.18.0"
+nalgebra = { version = "0.32.0", features = ["serde-serialize"] }
+parking_lot = "0.12.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9.0"
+smallvec = "1.10.0"
+tobj = "3.2.3"
 vulkano = { version = "0.34.0" }
 vulkano-shaders = { version = "0.34.0" }
 winit = "0.28.0"
-bytemuck = "1.12.3"
-nalgebra-glm = "0.18.0"
-nalgebra = { version = "0.32.0", features = ["serde-serialize"] }
-tobj = "3.2.3"
-image = { version = "0.24.0", default-features = false, features = ["png"] }
-smallvec = "1.10.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9.0"
-log = "0.4.8"
-parking_lot = "0.12.1"
-gltf = { version = "1.4.0", features = ["import", "names", "utils"] }
-
-# For egui integration
-ahash = "0.8.1"
-egui = "0.21.0"
-egui-winit = "0.21.0"
-

@@ -174,16 +174,8 @@ impl Pipeline {
     ) -> Result<Self, RhError> {
         // Vulkano pipeline is build based on the style, which determines the
         // shaders and the expected vertex format
-
-        //const USE_VIZ: bool = true; // Use for testing FIXME
-
-        const USE_VIZ: bool = false; // Use for testing FIXME
-
-        let frag_shader = if USE_VIZ {
-            viz_fs::load(device.clone()).map_err(Validated::unwrap)?
-        } else {
-            pbr_fs::load(device.clone()).map_err(Validated::unwrap)?
-        };
+        let frag_shader =
+            pbr_fs::load(device.clone()).map_err(Validated::unwrap)?;
         let graphics = {
             match style {
                 Style::Rigid => build_vk_pipeline::<RigidFormat>(
@@ -310,18 +302,21 @@ mod skinned_vs {
     }
 }
 
+// Shader with Visualization options for development and debugging
+#[cfg(feature = "visualize")]
 mod pbr_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/pbr.frag.glsl",
+        define: [("VISUALIZE", "1")],
     }
 }
 
-// Visualization shader for development and debugging
-mod viz_fs {
+// Shader with visualization disabled
+#[cfg(not(feature = "visualize"))]
+mod pbr_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/pbr.frag.glsl",
-        define: [("VISUALIZE", "1")],
     }
 }
