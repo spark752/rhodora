@@ -1,7 +1,10 @@
 use super::{
     dvb_wrapper::DvbWrapper,
     layout,
-    layout::{PushConstantData, LAYOUT_TEX_SET},
+    layout::{
+        PushConstantData, LAYOUT_MODEL_BINDING, LAYOUT_MODEL_SET,
+        LAYOUT_TEX_SET,
+    },
     material,
     material::{PbrMaterial, TexMaterial},
     mesh,
@@ -41,10 +44,7 @@ use vulkano::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-const M_SET: u32 = 1;
-
 const VERTEX_BINDING: u32 = 0;
-const M_BINDING: u32 = 0;
 
 pub struct Manager {
     models: Vec<Model>,
@@ -124,7 +124,8 @@ impl Manager {
             // binding the sampler plus texture. It would be nice to share that
             // too eventually, but for now it is only here. As long as the
             // created pipeline is compatible with it that should be ok.
-            let set_layout = layout::create_set_layout(device_access.device)?;
+            let set_layout =
+                layout::create_tex_set_layout(device_access.device)?;
             let pbr_material = material::tex_to_pbr(
                 &tex_material,
                 &manager.set_allocator,
@@ -259,7 +260,7 @@ impl Manager {
         // Process the materials, creating descriptors
         let layout = util::get_layout(
             &self.pipelines[pp_index].graphics,
-            LAYOUT_TEX_SET as usize,
+            LAYOUT_TEX_SET,
         )?;
         for m in tex_materials {
             self.materials.push(material::tex_to_pbr(
@@ -504,7 +505,8 @@ impl Manager {
                 model_view: mv.into(),
                 joints: self.models[model_index].joints.into(),
             };
-            let buffer = self.pipelines[pp_index].m_pool.allocate_sized()?;
+            let buffer =
+                self.pipelines[pp_index].subbuffer_pool.allocate_sized()?;
             *buffer.write()? = data;
             buffer
         };
@@ -513,10 +515,10 @@ impl Manager {
             desc_set_allocator,
             util::get_layout(
                 &self.pipelines[pp_index].graphics,
-                M_SET as usize,
+                LAYOUT_MODEL_SET,
             )?
             .clone(),
-            [WriteDescriptorSet::buffer(M_BINDING, m_buffer)],
+            [WriteDescriptorSet::buffer(LAYOUT_MODEL_BINDING, m_buffer)],
             [],
         )
         .map_err(Validated::unwrap)?;
@@ -525,7 +527,7 @@ impl Manager {
         cbb.bind_descriptor_sets(
             PipelineBindPoint::Graphics,
             self.pipelines[pp_index].layout().clone(),
-            M_SET, // starting set, higher values also changed
+            LAYOUT_MODEL_SET, // starting set, higher values also changed
             desc_set,
         )
         .unwrap(); // This is a Box<ValidationError>

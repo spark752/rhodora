@@ -41,14 +41,24 @@ pub struct PushConstantData {
     pub override_mode: u32, // Used only for visualization shader
 } // size must be a multiple of 4 and less than 128, alignment must be 4
 
-/// Use these values for layout in the fragment shader. For example:
-///
-/// `layout(set = 2, binding = 0) uniform sampler2D tex;`
+// Use these values for layout in the shaders. For example:
+//
+// `layout(set = 2, binding = 0) uniform sampler2D tex;
+pub const LAYOUT_PASS_SET: u32 = 0;
+pub const LAYOUT_PROJ_BINDING: u32 = 0;
+pub const LAYOUT_LIGHTS_BINDING: u32 = 1;
+pub const LAYOUT_MODEL_SET: u32 = 1;
+pub const LAYOUT_MODEL_BINDING: u32 = 0;
 pub const LAYOUT_TEX_SET: u32 = 2;
 pub const LAYOUT_TEX_BINDING: u32 = 0;
 
+// Note on function names:
+// `create_set_layout` is a module name repetition, but calling it "create_set"
+// seems more confusing because it is NOT creating a descriptor set, just the
+// layout for one. Which is confusing enough as it is.
+
 /// Creates a descriptor set layout for sampling the albedo texture in the
-/// fragment shader. Eventually this might do more and/or have a better name.
+/// fragment shader.
 ///
 /// # Errors
 /// May return `RhError`
@@ -56,11 +66,8 @@ pub const LAYOUT_TEX_BINDING: u32 = 0;
 /// # Panics
 /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
 ///
-// `create_set_layout` is a module name repetition, but calling it "create_set"
-// seems more confusing because it is NOT creating a descriptor set, just the
-// layout for one. Which is confusing enough as it is.
 #[allow(clippy::module_name_repetitions)]
-pub fn create_set_layout(
+pub fn create_tex_set_layout(
     device: Arc<Device>,
 ) -> Result<Arc<DescriptorSetLayout>, RhError> {
     let mut tree = BTreeMap::new();
@@ -85,7 +92,104 @@ pub fn create_set_layout(
                     descriptor_count: 1,
                     stages: FRAGMENT,
                     immutable_samplers: [],
-                    _ne: NonExhaustive(()) }}
+                    _ne: NonExhaustive(()) }
+    */
+    debug!("Generated descriptor set layout with bindings:");
+    debug!("{:?}", layout.bindings());
+
+    Ok(layout)
+}
+
+/// Creates a descriptor set layout for items that are constant for the entire
+/// rendering pass
+///
+/// # Errors
+/// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+///
+#[allow(clippy::module_name_repetitions)]
+#[allow(dead_code)]
+pub fn create_pass_set_layout(
+    device: Arc<Device>,
+) -> Result<Arc<DescriptorSetLayout>, RhError> {
+    let mut tree = BTreeMap::new();
+    let mut bind_proj = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind_proj.stages = ShaderStages::VERTEX;
+    tree.insert(LAYOUT_PROJ_BINDING, bind_proj);
+    let mut bind_lights = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind_lights.stages = ShaderStages::FRAGMENT;
+    tree.insert(LAYOUT_LIGHTS_BINDING, bind_lights);
+    let layout = DescriptorSetLayout::new(
+        device,
+        DescriptorSetLayoutCreateInfo {
+            bindings: tree,
+            ..Default::default()
+        },
+    )
+    .map_err(Validated::unwrap)?;
+
+    // Debug output should be something like
+    /* 0: DescriptorSetLayoutBinding { binding_flags: empty(),
+                    descriptor_type: UniformBuffer,
+                    descriptor_count: 1,
+                    stages: VERTEX,
+                    immutable_samplers: [],
+                    _ne: NonExhaustive(()) },
+        1: DescriptorSetLayoutBinding { binding_flags: empty(),
+                    descriptor_type: UniformBuffer,
+                    descriptor_count: 1,
+                    stages: FRAGMENT,
+                    immutable_samplers: [],
+                    _ne: NonExhaustive(()) }
+    */
+    debug!("Generated descriptor set layout with bindings:");
+    debug!("{:?}", layout.bindings());
+
+    Ok(layout)
+}
+
+/// Creates a descriptor set layout for items that are model specific
+///
+/// # Errors
+/// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+///
+#[allow(clippy::module_name_repetitions)]
+#[allow(dead_code)]
+pub fn create_model_set_layout(
+    device: Arc<Device>,
+) -> Result<Arc<DescriptorSetLayout>, RhError> {
+    let mut tree = BTreeMap::new();
+    let mut bind = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind.stages = ShaderStages::VERTEX;
+    tree.insert(LAYOUT_MODEL_BINDING, bind);
+
+    let layout = DescriptorSetLayout::new(
+        device,
+        DescriptorSetLayoutCreateInfo {
+            bindings: tree,
+            ..Default::default()
+        },
+    )
+    .map_err(Validated::unwrap)?;
+
+    // Debug output should be something like
+    /* 0: DescriptorSetLayoutBinding { binding_flags: empty(),
+                    descriptor_type: UniformBuffer,
+                    descriptor_count: 1,
+                    stages: VERTEX,
+                    immutable_samplers: [],
+                    _ne: NonExhaustive(()) }
     */
     debug!("Generated descriptor set layout with bindings:");
     debug!("{:?}", layout.bindings());

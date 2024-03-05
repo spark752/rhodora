@@ -14,8 +14,9 @@ layout(location = 0) out vec3 f_normal;
 layout(location = 1) out vec3 f_position;
 layout(location = 2) out vec2 f_tex_coord;
 
-// Uniform buffer definition shared with fragment shader in set 0
-#include "vpl.glsl"
+layout(set = 0, binding = 0) uniform VPL {
+    mat4 proj;
+} vpl;
 
 layout(set = 1, binding = 0) uniform M {
     mat4 model_view;

@@ -26,10 +26,12 @@ layout(location = 0) in vec3 f_normal;
 layout(location = 1) in vec3 f_position;
 layout(location = 2) in vec2 f_tex_coord;
 
-// Matrices are used by vertex shader but are part of the same uniform buffer.
 // The lights array currently contains point lights with each position in view
 // space in the xyz elements and its intensity in the w element.
-#include "vpl.glsl"
+layout(set = 0, binding = 1) uniform VPL {
+    vec4 ambient;
+    vec4 lights[4];
+} vpl;
 
 // Texture for albedo
 layout(set = 2, binding = 0) uniform sampler2D tex;

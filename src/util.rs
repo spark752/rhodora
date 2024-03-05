@@ -35,12 +35,12 @@ use vulkano::{Validated, VulkanError};
 /// May return `RhError`
 pub fn get_layout(
     pipeline: &Arc<GraphicsPipeline>,
-    set_number: usize,
+    set_number: u32,
 ) -> Result<&Arc<DescriptorSetLayout>, RhError> {
     pipeline
         .layout()
         .set_layouts()
-        .get(set_number)
+        .get(set_number as usize)
         .ok_or(RhError::PipelineError)
 }
 

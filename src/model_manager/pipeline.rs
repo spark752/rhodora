@@ -43,20 +43,20 @@ use vulkano::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-const VPL_SET: u32 = 0;
-const VPL_BINDING: u32 = 0;
+use super::layout::{
+    LAYOUT_LIGHTS_BINDING, LAYOUT_PASS_SET, LAYOUT_PROJ_BINDING,
+};
 
 // Two descriptor sets: one for view and projection matrices which change once
 // per frame, the other for model matrix which is different for each model
-pub type UniformVPL = skinned_vs::VPL;
+//pub type UniformVPL = skinned_vs::VPL;
 pub type UniformM = skinned_vs::M;
 
 pub struct Pipeline {
     pub style: Style,
     pub graphics: Arc<GraphicsPipeline>,
     pub sampler: Arc<Sampler>,
-    pub vpl_pool: SubbufferAllocator,
-    pub m_pool: SubbufferAllocator,
+    pub subbuffer_pool: SubbufferAllocator,
 }
 
 /// Helper function to build a vulkano pipeline compatible with vertex format T
@@ -193,21 +193,12 @@ impl Pipeline {
             }
         }?;
 
-        // These need to be customizable somehow
+        // Not sure how this works FIXME
         // For vulkano 0.34 these need to have `memory_type_filter` set
         // like below, or similar. Without that they can end up not accesible
         // to the host and result in a `VkHostAccessError(NotHostMapped` when
         // trying to write them from the CPU.
-        let vpl_pool = SubbufferAllocator::new(
-            mem_allocator.clone(),
-            SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::UNIFORM_BUFFER,
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-        );
-        let m_pool = SubbufferAllocator::new(
+        let subbuffer_pool = SubbufferAllocator::new(
             mem_allocator,
             SubbufferAllocatorCreateInfo {
                 buffer_usage: BufferUsage::UNIFORM_BUFFER,
@@ -221,8 +212,7 @@ impl Pipeline {
             style,
             graphics,
             sampler,
-            vpl_pool,
-            m_pool,
+            subbuffer_pool,
         })
     }
 
@@ -247,24 +237,43 @@ impl Pipeline {
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
         //trace!("Pipeline start_pass");
-        // Uniform buffer for view and projection matrix is in descriptor set
-        // 0 since this will constant for the entire frame.
-        // Lights are also here as an experiment.
-        let vpl_buffer = {
-            let data = UniformVPL {
+
+        // `LAYOUT_PASS_SET` is descriptor set point used for things that
+        // keep the same value for the entire pass, such as projection matrix
+        // and lights. Since binding a descriptor set automatically unbinds
+        // higher numbered sets it should probably be equal to 0.
+        // FIXME Use layouts instead of relying on shader inspection
+        let proj_buffer = {
+            let data = skinned_vs::VPL {
                 proj: camera.proj_matrix().into(),
-                ambient: lights.ambient_array(),
-                lights: lights.light_array(&camera.view_matrix()),
             };
-            //trace!("About to write to 'UniformVPL' UBO");
-            let buffer = self.vpl_pool.allocate_sized()?;
+            let buffer = self.subbuffer_pool.allocate_sized()?;
             *buffer.write()? = data;
             buffer
         };
+        let lights_buffer = {
+            let data = pbr_fs::VPL {
+                ambient: lights.ambient_array(),
+                lights: lights.light_array(&camera.view_matrix()),
+            };
+            let buffer = self.subbuffer_pool.allocate_sized()?;
+            *buffer.write()? = data;
+            buffer
+        };
+
+        // There are Vulkan alignment requirements for descriptors pointing
+        // to the same uniform buffer, but vulkano seems to be taking care
+        // of that for us.
         let desc_set = PersistentDescriptorSet::new(
             desc_set_allocator,
-            util::get_layout(&self.graphics, VPL_SET as usize)?.clone(),
-            [WriteDescriptorSet::buffer(VPL_BINDING, vpl_buffer)],
+            util::get_layout(&self.graphics, LAYOUT_PASS_SET)?.clone(),
+            [
+                WriteDescriptorSet::buffer(LAYOUT_PROJ_BINDING, proj_buffer),
+                WriteDescriptorSet::buffer(
+                    LAYOUT_LIGHTS_BINDING,
+                    lights_buffer,
+                ),
+            ],
             [],
         )
         .map_err(Validated::unwrap)?;
@@ -273,7 +282,7 @@ impl Pipeline {
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.layout().clone(),
-                VPL_SET,
+                LAYOUT_PASS_SET,
                 desc_set,
             )
             .unwrap(); // `Box<ValidationError>`
