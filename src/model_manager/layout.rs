@@ -9,6 +9,10 @@ use vulkano::{
         DescriptorSetLayoutCreateInfo, DescriptorType,
     },
     device::Device,
+    pipeline::layout::{
+        PipelineDescriptorSetLayoutCreateInfo, PipelineLayoutCreateFlags,
+        PushConstantRange,
+    },
     shader::ShaderStages,
     Validated,
 };
@@ -57,6 +61,20 @@ pub const LAYOUT_TEX_BINDING: u32 = 0;
 // seems more confusing because it is NOT creating a descriptor set, just the
 // layout for one. Which is confusing enough as it is.
 
+/// Returns a struct for creating a descriptor set layout of the texture
+fn create_tex_set_info() -> DescriptorSetLayoutCreateInfo {
+    let mut tree = BTreeMap::new();
+    let mut bind = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::CombinedImageSampler,
+    );
+    bind.stages = ShaderStages::FRAGMENT;
+    tree.insert(LAYOUT_TEX_BINDING, bind);
+    DescriptorSetLayoutCreateInfo {
+        bindings: tree,
+        ..Default::default()
+    }
+}
+
 /// Creates a descriptor set layout for sampling the albedo texture in the
 /// fragment shader.
 ///
@@ -70,21 +88,8 @@ pub const LAYOUT_TEX_BINDING: u32 = 0;
 pub fn create_tex_set_layout(
     device: Arc<Device>,
 ) -> Result<Arc<DescriptorSetLayout>, RhError> {
-    let mut tree = BTreeMap::new();
-    let mut bind = DescriptorSetLayoutBinding::descriptor_type(
-        DescriptorType::CombinedImageSampler,
-    );
-    bind.stages = ShaderStages::FRAGMENT;
-    tree.insert(LAYOUT_TEX_BINDING, bind);
-
-    let layout = DescriptorSetLayout::new(
-        device,
-        DescriptorSetLayoutCreateInfo {
-            bindings: tree,
-            ..Default::default()
-        },
-    )
-    .map_err(Validated::unwrap)?;
+    let layout = DescriptorSetLayout::new(device, create_tex_set_info())
+        .map_err(Validated::unwrap)?;
 
     // Debug output should be something like
     /* 0: DescriptorSetLayoutBinding { binding_flags: empty(),
@@ -98,6 +103,26 @@ pub fn create_tex_set_layout(
     debug!("{:?}", layout.bindings());
 
     Ok(layout)
+}
+
+/// Returns a struct for creating a descriptor set layout of items that
+/// are constant for the entire rendering pass
+fn create_pass_set_info() -> DescriptorSetLayoutCreateInfo {
+    let mut tree = BTreeMap::new();
+    let mut bind_proj = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind_proj.stages = ShaderStages::VERTEX;
+    tree.insert(LAYOUT_PROJ_BINDING, bind_proj);
+    let mut bind_lights = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind_lights.stages = ShaderStages::FRAGMENT;
+    tree.insert(LAYOUT_LIGHTS_BINDING, bind_lights);
+    DescriptorSetLayoutCreateInfo {
+        bindings: tree,
+        ..Default::default()
+    }
 }
 
 /// Creates a descriptor set layout for items that are constant for the entire
@@ -114,25 +139,8 @@ pub fn create_tex_set_layout(
 pub fn create_pass_set_layout(
     device: Arc<Device>,
 ) -> Result<Arc<DescriptorSetLayout>, RhError> {
-    let mut tree = BTreeMap::new();
-    let mut bind_proj = DescriptorSetLayoutBinding::descriptor_type(
-        DescriptorType::UniformBuffer,
-    );
-    bind_proj.stages = ShaderStages::VERTEX;
-    tree.insert(LAYOUT_PROJ_BINDING, bind_proj);
-    let mut bind_lights = DescriptorSetLayoutBinding::descriptor_type(
-        DescriptorType::UniformBuffer,
-    );
-    bind_lights.stages = ShaderStages::FRAGMENT;
-    tree.insert(LAYOUT_LIGHTS_BINDING, bind_lights);
-    let layout = DescriptorSetLayout::new(
-        device,
-        DescriptorSetLayoutCreateInfo {
-            bindings: tree,
-            ..Default::default()
-        },
-    )
-    .map_err(Validated::unwrap)?;
+    let layout = DescriptorSetLayout::new(device, create_pass_set_info())
+        .map_err(Validated::unwrap)?;
 
     // Debug output should be something like
     /* 0: DescriptorSetLayoutBinding { binding_flags: empty(),
@@ -154,6 +162,21 @@ pub fn create_pass_set_layout(
     Ok(layout)
 }
 
+/// Returns a struct for creating a descriptor set layout of model specific
+/// data
+fn create_model_set_info() -> DescriptorSetLayoutCreateInfo {
+    let mut tree = BTreeMap::new();
+    let mut bind = DescriptorSetLayoutBinding::descriptor_type(
+        DescriptorType::UniformBuffer,
+    );
+    bind.stages = ShaderStages::VERTEX;
+    tree.insert(LAYOUT_MODEL_BINDING, bind);
+    DescriptorSetLayoutCreateInfo {
+        bindings: tree,
+        ..Default::default()
+    }
+}
+
 /// Creates a descriptor set layout for items that are model specific
 ///
 /// # Errors
@@ -167,21 +190,8 @@ pub fn create_pass_set_layout(
 pub fn create_model_set_layout(
     device: Arc<Device>,
 ) -> Result<Arc<DescriptorSetLayout>, RhError> {
-    let mut tree = BTreeMap::new();
-    let mut bind = DescriptorSetLayoutBinding::descriptor_type(
-        DescriptorType::UniformBuffer,
-    );
-    bind.stages = ShaderStages::VERTEX;
-    tree.insert(LAYOUT_MODEL_BINDING, bind);
-
-    let layout = DescriptorSetLayout::new(
-        device,
-        DescriptorSetLayoutCreateInfo {
-            bindings: tree,
-            ..Default::default()
-        },
-    )
-    .map_err(Validated::unwrap)?;
+    let layout = DescriptorSetLayout::new(device, create_model_set_info())
+        .map_err(Validated::unwrap)?;
 
     // Debug output should be something like
     /* 0: DescriptorSetLayoutBinding { binding_flags: empty(),
@@ -195,4 +205,26 @@ pub fn create_model_set_layout(
     debug!("{:?}", layout.bindings());
 
     Ok(layout)
+}
+
+/// Returns a struct for creating a pipeline descriptor set layout. This
+/// contains the buffer and push constant configuration for shaders in the
+/// main rendering pass.
+pub fn pipeline_create_info() -> PipelineDescriptorSetLayoutCreateInfo {
+    #[allow(clippy::cast_possible_truncation)]
+    let set_info = PipelineDescriptorSetLayoutCreateInfo {
+        flags: PipelineLayoutCreateFlags::empty(),
+        set_layouts: vec![
+            create_pass_set_info(),
+            create_model_set_info(),
+            create_tex_set_info(),
+        ],
+        push_constant_ranges: vec![PushConstantRange {
+            stages: ShaderStages::FRAGMENT,
+            offset: 0,
+            size: std::mem::size_of::<PushConstantData>() as u32,
+        }],
+    };
+    debug!("PipelineDescriptorSetLayoutCreateInfo={:?}", set_info);
+    set_info
 }

@@ -1,3 +1,4 @@
+use super::layout;
 use crate::{
     mesh_import::Style,
     pbr_lights::PbrLightTrait,
@@ -32,7 +33,6 @@ use vulkano::{
             viewport::ViewportState,
             GraphicsPipelineCreateInfo,
         },
-        layout::PipelineDescriptorSetLayoutCreateInfo,
         DynamicState, GraphicsPipeline, PipelineLayout,
         PipelineShaderStageCreateInfo,
     },
@@ -89,38 +89,16 @@ fn build_vk_pipeline<T: Vertex>(
             PipelineShaderStageCreateInfo::new(fs),
         ];
 
-        // Pipeline layout could potentially be shared. It collects some
-        // descriptor set layouts which could also be shared.
-        // CAUTION: The descriptor set for the albedo texture is deduced from
-        // the shader. It must match the one manually created for the default
-        // material. That is done using `layout::create_set`. Ideally that one
-        // would be shared or another created the same way, but that doesn't
-        // cover the other descriptor sets so this is a possible TODO.
+        // Pipeline layout could potentially be shared. It is put together
+        // manually instead of inspecting shaders, so is currently the same
+        // for all main pass pipelines.
         let layout = {
-            let set_info =
-                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages);
-            debug!("PipelineDescriptorSetLayoutCreateInfo={:?}", set_info);
+            let set_info = layout::pipeline_create_info();
             PipelineLayout::new(
                 device.clone(),
                 set_info.into_pipeline_layout_create_info(device.clone())?,
             )
             .map_err(Validated::unwrap)?
-            /*Debug info is something like this:
-            VPL {0: DescriptorSetLayoutBinding { binding_flags: empty(),
-                descriptor_type: UniformBuffer, descriptor_count: 1,
-                stages: VERTEX | FRAGMENT, immutable_samplers: [],
-                _ne: NonExhaustive(()) }}
-            M {0: DescriptorSetLayoutBinding { binding_flags: empty(),
-                descriptor_type: UniformBuffer, descriptor_count: 1,
-                stages: VERTEX, immutable_samplers: [],
-                _ne: NonExhaustive(()) }}
-            tex {0: DescriptorSetLayoutBinding { binding_flags: empty(),
-                descriptor_type: CombinedImageSampler, descriptor_count: 1,
-                stages: FRAGMENT, immutable_samplers: [],
-                _ne: NonExhaustive(()) }}
-            push constants:
-                [PushConstantRange { stages: FRAGMENT, offset: 0, size: 24 }]
-            */
         };
 
         let subpass = PipelineRenderingCreateInfo {
