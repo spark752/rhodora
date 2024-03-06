@@ -38,6 +38,7 @@ pub enum RhError {
     RenderPassError,
     PipelineError,
     FutureFlush,
+    FenceError,
     InvalidFile,
     FileTooShort,
     DataNotConverted,
@@ -89,6 +90,7 @@ impl fmt::Display for RhError {
             Self::RenderPassError => write!(f, "RenderPass error"),
             Self::PipelineError => write!(f, "Pipeline error"),
             Self::FutureFlush => write!(f, "could not flush future"),
+            Self::FenceError => write!(f, "could not get fence"),
             Self::InvalidFile => write!(f, "invalid file"),
             Self::FileTooShort => write!(f, "file too short"),
             Self::DataNotConverted => {

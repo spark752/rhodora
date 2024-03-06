@@ -1,4 +1,5 @@
 use crate::{
+    frame_control::FrameControl,
     memory::Memory,
     mesh_import::{Batch, FileToLoad, Style},
     model_manager::Manager as ModelManager,
@@ -13,7 +14,7 @@ use crate::{
     util,
     vk_window::{Properties, VkWindow},
 };
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use vulkano::{
@@ -41,44 +42,6 @@ pub enum Action {
     Continue,
     Return,
     Resize(PhysicalSize<u32>),
-}
-
-pub struct FrameControl {
-    fences: Vec<Option<Box<dyn GpuFuture>>>,
-    fence_index: usize,
-    previous_fence_index: usize,
-    frame_count: usize,
-    frames_in_flight: usize,
-}
-
-impl FrameControl {
-    fn new(frames_in_flight: usize) -> Self {
-        // FIXME
-        if frames_in_flight != 1 {
-            error!("FRAMES IN FLIGHT CURRENTLY BROKEN, SETTING TO 1");
-        }
-        // The vec! macro doesn't work because the type doesn't implement
-        // clone?
-        let mut fences = Vec::new();
-        for _ in 0..frames_in_flight {
-            fences.push(None);
-        }
-        Self {
-            fences,
-            fence_index: 0,
-            previous_fence_index: 0,
-            frame_count: 0,
-            frames_in_flight: 1,
-        }
-    }
-
-    #[allow(clippy::modulo_one)] // FRAMES_IN_FLIGHT might equal 1
-    fn update(&mut self, new_fence: Option<Box<dyn GpuFuture>>) {
-        self.fences[self.fence_index] = new_fence;
-        self.previous_fence_index = self.fence_index;
-        self.fence_index = (self.fence_index + 1) % self.frames_in_flight;
-        self.frame_count += 1;
-    }
 }
 
 pub struct Timing {
@@ -109,6 +72,7 @@ pub struct Boss {
     timing: Option<Timing>,
     limiter: Option<Limiter>,
     loop_start: Option<Instant>,
+    vsync: bool,
 }
 
 impl Boss {
@@ -264,6 +228,7 @@ impl Boss {
             timing: None,
             limiter: None,
             loop_start: None,
+            vsync,
         })
     }
 
@@ -300,13 +265,13 @@ impl Boss {
             }) {
                 Ok(r) => r,
                 // Error can happen during resizing, just retry
-                // FIXME Maybe not anymore?
-                //Err(SwapchainCreationError::ImageExtentNotSupported {
-                //    ..
-                //}) => {
-                //    info!("retry for image extent not supported");
-                //    return Err(RhError::RetryRecreate);
-                //}
+                // Maybe not anymore with vulkano 0.34?
+                /*Err(SwapchainCreationError::ImageExtentNotSupported {
+                    ..
+                }) => {
+                    warn!("retry for image extent not supported");
+                    return Err(RhError::RetryRecreate);
+                }*/
                 Err(e) => {
                     error!("Could not recreate swapchain: {e:?}");
                     return Err(RhError::RecreateFailed);
@@ -441,10 +406,8 @@ impl Boss {
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
-        //trace!("Getting rendering target attachment");
         let attachment_info = self.attachment_info(background);
 
-        //trace!("Recording 'begin_rendering' to command buffer");
         cbb.begin_rendering(RenderingInfo {
             color_attachments: vec![Some(attachment_info)],
             depth_attachment: Some(RenderingAttachmentInfo {
@@ -459,14 +422,12 @@ impl Boss {
         })
         .unwrap(); // This is a Box<ValidationError>
 
-        //trace!("Setting the viewport");
         cbb.set_viewport(
             0, // (line break for easier reading)
             std::iter::once(self.viewport.clone()).collect(),
         )
         .unwrap(); // This is a Box<ValidationError>
 
-        //trace!("Calling ModelManager 'draw_all'");
         self.model_manager.draw_all(
             cbb,
             &self.memory.set_allocator,
@@ -474,7 +435,6 @@ impl Boss {
             lights,
         )?;
 
-        //trace!("Ending the render pass");
         self.render_pass_end(cbb)
     }
 
@@ -541,6 +501,7 @@ impl Boss {
             [self.frame_control.previous_fence_index]
         {
             f.cleanup_finished();
+            trace!("render_start cleanup_finished");
         }
 
         // Return
@@ -574,7 +535,7 @@ impl Boss {
             before_future.join(
                 self.frame_control.fences[self.frame_control.fence_index]
                     .take()
-                    .ok_or(RhError::FutureFlush)?, // FIXME incorrect error
+                    .ok_or(RhError::FenceError)?,
             )
         } else {
             before_future.join(self.now_future())
@@ -600,6 +561,7 @@ impl Boss {
         before_future: Box<dyn GpuFuture>,
         image_index: u32,
     ) -> Result<(), RhError> {
+        trace!("present image_index={}", image_index);
         let after_future = before_future
             .then_swapchain_present(
                 self.window.graphics_queue().clone(),
@@ -647,39 +609,78 @@ impl Boss {
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
+        let benchmark = Instant::now();
+        if let Some(limiter) = &self.limiter {
+            let e = limiter.previous_instant.elapsed();
+            if e > Duration::from_micros(1500) {
+                debug!("render_all slow start {:?} after limiter reset", e);
+            }
+        }
+
         // Acquire an image from the swapchain to draw. Returns a
         // future that indicates when the image will be available and
         // may block until it knows that.
-        //trace!("Acquiring swapchain image");
+        let wait_time = Instant::now();
         let (image_index, acquire_future) = match self.acquire_next_image() {
             Ok(r) => r,
             Err(RhError::SwapchainOutOfDate) => return Ok(()),
             Err(e) => return Err(e),
         };
+        let e = wait_time.elapsed();
+        if e > Duration::from_micros(100) {
+            debug!(
+                "render_all slow to learn image_index={} in {:?}",
+                image_index, e
+            );
+        } else {
+            trace!("render_all knew image_index={} in {:?}", image_index, e);
+        }
 
         // Create command buffer. For dynamic rendering, begin_rendering
         // and end_rendering are used instead of begin_render_pass and
         // end_render_pass.
-        //trace!("Creating command buffer builder");
         let mut cbb = self.create_primary_cbb().map_err(Validated::unwrap)?;
 
         // First pass into postprocess input texture via MSAA if enabled
-        //trace!("Starting main pass");
+        trace!(
+            "render_all calling render_main_pass at {:?}",
+            benchmark.elapsed()
+        );
         self.render_main_pass(&mut cbb, background, camera, lights)?;
 
         // Second pass postprocess to swapchain image
-        //trace!("Starting postprocess pass");
+        trace!(
+            "render_all calling render_pass_postprocess at {:?}",
+            benchmark.elapsed()
+        );
         self.render_pass_postprocess(&mut cbb, image_index)?;
         self.render_pass_end(&mut cbb)?;
 
         // Wait for swapchain image first. This avoids stutters and 100%
-        // CPU usage on Linux + NVIDIA when vsync is on.
-        acquire_future
-            .wait(None)
-            .expect("Fence error while waiting for swapchain image");
+        // CPU usage on Linux + NVIDIA when vsync is on. This is where the
+        // wait for vsync will occur.
+        let wait_time = Instant::now();
+        acquire_future.wait(None)?;
+        let e = wait_time.elapsed();
+        if !self.vsync && e > Duration::from_micros(200) {
+            debug!(
+                "slow to get swapchain image, waited for {:?}",
+                wait_time.elapsed()
+            );
+        } else if e > Duration::from_micros(16500) {
+            debug!(
+                "vsync slow to get swapchain image, waited for {:?}",
+                wait_time.elapsed()
+            );
+        } else {
+            trace!("waited for swapchain image for {:?}", wait_time.elapsed());
+        }
 
         // Submit command buffer & present swapchain once ready
-        //trace!("Submitting command buffer and presenting swapchain");
+        trace!(
+            "render_all calling submit_and_present at {:?}",
+            benchmark.elapsed()
+        );
         self.submit_and_present(
             cbb,
             //previous_future,
@@ -758,6 +759,7 @@ impl Boss {
                 target_duration,
                 previous_instant: Instant::now(),
             });
+            trace!("start_loop limiter reset");
         };
     }
 
@@ -829,6 +831,7 @@ impl Boss {
                     {
                         do_render = true;
                         limiter.previous_instant = Instant::now();
+                        trace!("MainEventsCleared limiter reset");
                         control_flow.set_wait_until(
                             limiter.previous_instant + limiter.target_duration,
                         );
@@ -851,6 +854,7 @@ impl Boss {
             // If the user is doing something slow like loading, they can
             // bypass the catch up mechanism
             if drop_ticks {
+                trace!("finish_tick with drop_ticks=true");
                 timing.time_acc_us = 0;
             } else {
                 timing.time_acc_us -= timing.tick_interval_us;

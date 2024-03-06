@@ -3,6 +3,7 @@ pub mod camera;
 pub mod dualquat;
 pub mod dvb;
 pub mod egui_integration;
+pub mod frame_control;
 pub mod keyboard;
 pub mod memory;
 pub mod mesh_import;
