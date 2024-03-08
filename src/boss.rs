@@ -1,12 +1,13 @@
 use crate::{
+    egui_integration::GuiTrait,
     frame_control::FrameControl,
     memory::Memory,
     mesh_import::{Batch, FileToLoad, Style},
-    model_manager::Manager as ModelManager,
+    model_manager::ModelManager,
     pbr_lights::PbrLightTrait,
     postprocess::PostProcess,
     rh_error::RhError,
-    texture::Manager as TextureManager,
+    texture::TextureManager,
     types::{
         CameraTrait, DeviceAccess, KeyboardHandler, RenderFormat,
         TransferFuture,
@@ -24,10 +25,12 @@ use vulkano::{
     },
     device::{Device, Queue},
     format::Format,
-    image::{view::ImageView, Image, SampleCount},
+    image::{view::ImageView, SampleCount},
     pipeline::graphics::viewport::Viewport,
     render_pass::{AttachmentLoadOp, AttachmentStoreOp},
-    swapchain::{Swapchain, SwapchainCreateInfo, SwapchainPresentInfo},
+    swapchain::{
+        Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
+    },
     sync::GpuFuture,
 };
 use vulkano::{swapchain::SwapchainAcquireFuture, Validated, VulkanError};
@@ -56,14 +59,14 @@ pub struct Limiter {
 }
 
 pub struct Boss {
-    pub window: VkWindow,
+    window: VkWindow,
     render_format: RenderFormat,
     pub memory: Memory,
     pub swapchain: Arc<Swapchain>,
-    pub swapchain_views: Vec<Arc<ImageView>>,
-    pub postprocess: PostProcess,
-    pub viewport: Viewport,
-    pub depth_image_view: Arc<ImageView>,
+    swapchain_views: Vec<Arc<ImageView>>,
+    postprocess: PostProcess,
+    viewport: Viewport,
+    depth_image_view: Arc<ImageView>,
     msaa_option: Option<Arc<ImageView>>,
     window_resized: bool,
     recreate_swapchain: bool,
@@ -112,7 +115,7 @@ impl Boss {
             swapchain_req_format,
             util::choose_present_mode(&window, vsync),
         )?;
-        let swapchain_views = Self::create_image_views(&images)?;
+        let swapchain_views = util::create_image_views(&images)?;
 
         // Set output format for rendering pass
         let colour_candidates = [
@@ -198,6 +201,7 @@ impl Boss {
         // No more commands need to be recorded, so execute the command buffer.
         // Initialization of unrelated modules could continue after this
         // (if there were any).
+        let benchmark = Instant::now();
         let cb = cbb.build().map_err(Validated::unwrap)?;
         let future = cb
             .execute(window.graphics_queue().clone())?
@@ -205,11 +209,11 @@ impl Boss {
             .map_err(Validated::unwrap)?;
 
         // Wait for the GPU to finish the commands submitted for the
-        // postprocess layer creation. Not very efficient but it shouldn't
-        // take very long. Probably could return the future and let the caller
-        // use it as a condition for a later queue submission, but that adds
-        // complexity.
+        // module creation. Not very efficient but it shouldn't take very long.
+        // Probably could return the future and let the caller use it as a
+        // condition for a later queue submission, but that adds complexity.
         future.wait(None).map_err(Validated::unwrap)?;
+        debug!("Initial GPU transfer took {:?}", benchmark.elapsed());
 
         Ok(Self {
             window,
@@ -254,6 +258,8 @@ impl Boss {
         Ok(())
     }
 
+    /// Recreates the swapchain after a window resize etc.
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn recreate(&mut self) -> Result<(), RhError> {
@@ -278,7 +284,7 @@ impl Boss {
                 }
             };
         self.swapchain = new_swapchain;
-        self.swapchain_views = Self::create_image_views(&new_images)?;
+        self.swapchain_views = util::create_image_views(&new_images)?;
         Ok(())
     }
 
@@ -298,20 +304,9 @@ impl Boss {
         )
     }
 
-    fn create_image_views(
-        images: &[Arc<Image>],
-    ) -> Result<Vec<Arc<ImageView>>, RhError> {
-        let mut ret = Vec::new();
-        for image in images {
-            ret.push(
-                ImageView::new_default(image.clone())
-                    .map_err(Validated::unwrap)?,
-            );
-        }
-        Ok(ret)
-    }
-
     #[allow(clippy::type_complexity)]
+    /// Acquires the next image from the swapchain
+    ///
     /// # Errors
     /// May return `RhError`
     ///
@@ -331,7 +326,9 @@ impl Boss {
             {
                 Ok(r) => r,
                 Err(VulkanError::OutOfDate) => {
-                    info!("Recreate swapchain for out of date");
+                    // This seems to happen on `present` after window resizing
+                    // but not here
+                    debug!("acquire_next_image says swapchain is out of date");
                     self.recreate_swapchain = true;
                     return Err(RhError::SwapchainOutOfDate);
                 }
@@ -341,19 +338,21 @@ impl Boss {
                 }
             };
 
-        // Some drivers might return suboptimal during window resize
+        // "Some drivers might return suboptimal during window resize"
         if suboptimal {
-            info!("recreate swapchain for suboptimal");
+            debug!("recreate_swapchain for suboptimal");
             self.recreate_swapchain = true;
         }
 
-        Ok((image_index, acquire_future)) //.boxed()))
+        Ok((image_index, acquire_future))
     }
 
     #[must_use]
+    /// Creates a `RenderingAttachmentInfo` struct compatible with rendering
+    /// using the provided background colour
     pub fn attachment_info(
         &self,
-        background: &[f32; 4],
+        background: [f32; 4],
     ) -> RenderingAttachmentInfo {
         util::attachment_info(
             background,
@@ -402,7 +401,7 @@ impl Boss {
     pub fn render_main_pass<T>(
         &self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        background: &[f32; 4],
+        background: [f32; 4],
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
@@ -454,6 +453,7 @@ impl Boss {
     }
 
     #[must_use]
+    /// Returns the current `RenderFormat`
     pub const fn render_format(&self) -> RenderFormat {
         self.render_format
     }
@@ -500,6 +500,12 @@ impl Boss {
         if let Some(f) = &mut self.frame_control.fences
             [self.frame_control.previous_fence_index]
         {
+            /* "If possible, checks whether the submission has finished. If so,
+            gives up ownership of the resources used by these submissions.
+            It is highly recommended to call cleanup_finished from time to
+            time. Doing so will prevent memory usage from increasing over
+            time, and will also destroy the locks on resources used by the
+            GPU." */
             f.cleanup_finished();
             trace!("render_start cleanup_finished");
         }
@@ -512,41 +518,47 @@ impl Boss {
         })
     }
 
-    /// Wait for `before_future`, then submit a primary command queue, then
-    /// present to Vulkan
+    /// Wait on the GPU fence, then submit a primary command queue, then present
+    /// it to Vulkan.
+    ///
+    /// The caller should have already waited for the swapchain image to be
+    /// available to prevent an issue with Nvidia on Linux with vsync enabled.
+    /// However the future still needs to be provided to prevent a Vulkan
+    /// validation error and panic.
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if vulkano returns a validation error
     pub fn submit_and_present(
         &mut self,
         cbb: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         before_future: Box<dyn GpuFuture>,
         image_index: u32,
     ) -> Result<(), RhError> {
+        let benchmark = Instant::now();
         let command_buffer = cbb.build().map_err(Validated::unwrap)?;
 
-        // Wait for GPU fence
-        // This akward construction creates a JoinedFuture even if there is
-        // nothing to join
-        let before_future = if self.frame_control.fences
-            [self.frame_control.fence_index]
-            .is_some()
-        {
-            before_future.join(
-                self.frame_control.fences[self.frame_control.fence_index]
-                    .take()
-                    .ok_or(RhError::FenceError)?,
-            )
-        } else {
-            before_future.join(self.now_future())
+        // Create a joined future by joining the provided `before_future` with
+        // the current fence if there is one and the right type of "now" future
+        // if there is not.
+        let gpu_future = {
+            if let Some(x) = self.frame_control.take() {
+                before_future.join(x)
+            } else {
+                before_future.join(self.now_future())
+            }
         };
 
-        // Submit and call present
-        let after_future = before_future.then_execute(
+        // Wait for GPU fence then submit and call present
+        let after_future = gpu_future.then_execute(
             self.window.graphics_queue().clone(),
             command_buffer,
         )?;
-        self.present(after_future.boxed(), image_index)
+        self.present(after_future.boxed(), image_index)?;
+        trace!("submit_and_present took {:?}", benchmark.elapsed());
+        Ok(())
     }
 
     /// Wait for `before_future` then present to Vulkan
@@ -578,12 +590,12 @@ impl Boss {
             Err(VulkanError::OutOfDate) => {
                 // Happens on resizing
                 self.recreate_swapchain = true;
-                info!("Recreate swapchain for flush error");
+                debug!("present says swapchain is out of date");
                 Ok(Some(self.now_future()))
             }
             Err(e) => {
                 error!("Couldn't flush future: {e:?}");
-                Err(RhError::FutureFlush)
+                Err(RhError::FutureFlush(e))
             }
         };
 
@@ -605,9 +617,10 @@ impl Boss {
     /// Panics if a swapchain image or its future can not be acquired
     pub fn render_all(
         &mut self,
-        background: &[f32; 4],
+        background: [f32; 4],
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
+        gui: Option<&mut impl GuiTrait>,
     ) -> Result<(), RhError> {
         let benchmark = Instant::now();
         if let Some(limiter) = &self.limiter {
@@ -654,26 +667,34 @@ impl Boss {
             benchmark.elapsed()
         );
         self.render_pass_postprocess(&mut cbb, image_index)?;
+        if let Some(g) = gui {
+            g.draw(self.swapchain.image_extent(), &mut cbb)?;
+        };
         self.render_pass_end(&mut cbb)?;
 
-        // Wait for swapchain image first. This avoids stutters and 100%
-        // CPU usage on Linux + NVIDIA when vsync is on. This is where the
-        // wait for vsync will occur.
-        let wait_time = Instant::now();
-        acquire_future.wait(None)?;
-        let e = wait_time.elapsed();
-        if !self.vsync && e > Duration::from_micros(200) {
-            debug!(
-                "slow to get swapchain image, waited for {:?}",
-                wait_time.elapsed()
-            );
-        } else if e > Duration::from_micros(16500) {
-            debug!(
-                "vsync slow to get swapchain image, waited for {:?}",
-                wait_time.elapsed()
-            );
-        } else {
-            trace!("waited for swapchain image for {:?}", wait_time.elapsed());
+        // Wait for swapchain image first when vsync is on. This works around
+        // vsync problems on Linux + NVIDIA which cause continual 100% CPU
+        // core usage and major lag (40+ ms frames) every few seconds. However
+        // there are still many slow frames in the 18 to 20 ms range on the
+        // test system. Turning off vsync seems to be a better option.
+        if self.vsync {
+            let wait_time = Instant::now();
+
+            // Still need to use this future later (even though we know it
+            // will have been already signalled) to avoid a vulkano validation
+            // error / panic
+            acquire_future.wait(None)?;
+
+            // The wait time is expected to be long because the vsync delay
+            // is done here. But if it is over ~16.5 ms, how are we supposed
+            // to have time to actually create a frame?
+            let e = wait_time.elapsed();
+            if e > Duration::from_micros(16500) {
+                debug!(
+                    "vsync slow to get swapchain image, waited for {:?}",
+                    wait_time.elapsed()
+                );
+            }
         }
 
         // Submit command buffer & present swapchain once ready
@@ -682,8 +703,7 @@ impl Boss {
             benchmark.elapsed()
         );
         self.submit_and_present(
-            cbb,
-            //previous_future,
+            cbb, // (line break for readability)
             Box::new(acquire_future),
             image_index,
         )
@@ -763,6 +783,8 @@ impl Boss {
         };
     }
 
+    /// Handles events for the event loop
+    ///
     /// # Panics
     /// Panics if the number of microseconds since the last tick can not fit
     /// into an `i64`. This could happen if you have over 292,000 years between
@@ -835,6 +857,8 @@ impl Boss {
                         control_flow.set_wait_until(
                             limiter.previous_instant + limiter.target_duration,
                         );
+                    } else {
+                        trace!("waiting due to limiter");
                     }
                 } else {
                     // Render everytime if limiter not set
@@ -849,10 +873,10 @@ impl Boss {
         (do_tick, do_render)
     }
 
+    /// Call to finish the tick. Attempts to "catch up" unless `drop_ticks`
+    /// is set
     pub fn finish_tick(&mut self, drop_ticks: bool) -> Option<i64> {
         if let Some(timing) = &mut self.timing {
-            // If the user is doing something slow like loading, they can
-            // bypass the catch up mechanism
             if drop_ticks {
                 trace!("finish_tick with drop_ticks=true");
                 timing.time_acc_us = 0;
@@ -866,11 +890,14 @@ impl Boss {
         None
     }
 
+    /// Returns the graphics queue
     #[must_use]
     pub const fn graphics_queue(&self) -> &Arc<Queue> {
         self.window.graphics_queue()
     }
 
+    /// Starts a transfer using the graphics queue
+    ///
     /// # Errors
     /// May return `RhError`
     pub fn start_transfer(
@@ -881,6 +908,7 @@ impl Boss {
         util::start_transfer(cbb, self.graphics_queue().clone())
     }
 
+    /// Returns the `Device` in use
     #[must_use]
     pub const fn device(&self) -> &Arc<Device> {
         self.window.device()
@@ -893,7 +921,7 @@ impl Boss {
         self.model_manager.texture_manager()
     }
 
-    /// Get a boxed "now" future compatible with the device
+    /// Gets a boxed "now" future compatible with the device
     #[must_use]
     pub fn now_future(&self) -> Box<dyn GpuFuture> {
         vulkano::sync::now(self.window.device().clone()).boxed()
@@ -903,5 +931,23 @@ impl Boss {
     #[must_use]
     pub fn elapsed(&self) -> Option<Duration> {
         self.loop_start.map(|loop_start| loop_start.elapsed())
+    }
+
+    // Dimensions of the swapchain images
+    #[must_use]
+    pub fn dimensions(&self) -> [u32; 2] {
+        self.swapchain.image_extent()
+    }
+
+    // Reference to the `Surface` being used
+    #[must_use]
+    pub const fn surface(&self) -> &Arc<Surface> {
+        self.window.surface()
+    }
+
+    // Reference to the `VkWindow` being used
+    #[must_use]
+    pub const fn window(&self) -> &VkWindow {
+        &self.window
     }
 }

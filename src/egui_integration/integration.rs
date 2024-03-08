@@ -44,6 +44,19 @@ impl Default for GuiConfig {
     }
 }
 
+/// Trait for GUI integration implementing a draw command
+pub trait GuiTrait {
+    /// Trait for GUI integration implementing a draw command
+    ///
+    /// # Errors
+    /// May return `RhError`
+    fn draw<T>(
+        &mut self,
+        dimensions: [u32; 2],
+        builder: &mut AutoCommandBufferBuilder<T>,
+    ) -> Result<(), RhError>;
+}
+
 pub struct Gui {
     pub egui_ctx: egui::Context,
     pub egui_winit: egui_winit::State,
@@ -51,6 +64,25 @@ pub struct Gui {
     surface: Arc<Surface>,
     shapes: Vec<egui::epaint::ClippedShape>,
     textures_delta: egui::TexturesDelta,
+}
+
+impl GuiTrait for Gui {
+    fn draw<T>(
+        &mut self,
+        dimensions: [u32; 2],
+        builder: &mut AutoCommandBufferBuilder<T>,
+    ) -> Result<(), RhError> {
+        let (clipped_meshes, textures_delta) =
+            self.extract_draw_data_at_frame_end()?;
+
+        self.renderer.draw(
+            &clipped_meshes,
+            &textures_delta,
+            self.egui_winit.pixels_per_point(),
+            dimensions,
+            builder,
+        )
+    }
 }
 
 impl Gui {
@@ -165,25 +197,6 @@ impl Gui {
             .take_egui_input(surface_window(&self.surface)?);
         self.egui_ctx.begin_frame(raw_input);
         Ok(())
-    }
-
-    /// # Errors
-    /// May return `RhError`
-    pub fn draw<T>(
-        &mut self,
-        dimensions: [u32; 2],
-        builder: &mut AutoCommandBufferBuilder<T>,
-    ) -> Result<(), RhError> {
-        let (clipped_meshes, textures_delta) =
-            self.extract_draw_data_at_frame_end()?;
-
-        self.renderer.draw(
-            &clipped_meshes,
-            &textures_delta,
-            self.egui_winit.pixels_per_point(),
-            dimensions,
-            builder,
-        )
     }
 
     fn extract_draw_data_at_frame_end(

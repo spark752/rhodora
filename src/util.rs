@@ -162,7 +162,7 @@ pub fn create_msaa(
     .map_err(Validated::unwrap)?)
 }
 
-/// Select first supported format for depth attachment from an array of
+/// Selects first supported format for depth attachment from an array of
 /// candidates
 ///
 /// # Errors
@@ -187,7 +187,7 @@ pub fn find_depth_format(
     Err(RhError::UnsupportedDepthFormat)
 }
 
-/// Select first supported format for colour attachment and sampling from
+/// Selects first supported format for colour attachment and sampling from
 /// an array of candidates
 ///
 /// # Errors
@@ -213,7 +213,7 @@ pub fn find_colour_format(
     Err(RhError::UnsupportedColourFormat)
 }
 
-/// Select first supported format for swapchain use (compatible with the
+/// Selects first supported format for swapchain use (compatible with the
 /// surface) from an array of candidates
 ///
 /// # Errors
@@ -316,11 +316,11 @@ pub fn create_swapchain(
 
 #[must_use]
 pub fn attachment_info(
-    background: &[f32; 4],
+    background: [f32; 4],
     target_image_view: Arc<ImageView>,
     msaa_option: Option<Arc<ImageView>>,
 ) -> RenderingAttachmentInfo {
-    let clear_value = Some((*background).into());
+    let clear_value = Some(background.into());
     if let Some(msaa_image_view) = msaa_option {
         RenderingAttachmentInfo {
             load_op: AttachmentLoadOp::Clear,
@@ -348,7 +348,7 @@ pub fn focal_length_to_fovy(focal_length: f32) -> f32 {
     (12.0f32 / f).atan() * 2.0f32
 }
 
-/// Start a transfer to the GPU by building and executing a command buffer
+/// Starts a transfer to the GPU by building and executing a command buffer
 /// and returning a future to wait on
 ///
 /// # Errors
@@ -365,7 +365,7 @@ pub fn start_transfer(
         .map_err(Validated::unwrap)?)
 }
 
-/// Transform a 3D position using a 4x4 matrix and return as a `glm::Vec3`
+/// Transforms a 3D position using a 4x4 matrix and return as a `glm::Vec3`
 #[must_use]
 pub fn transform(position: &glm::Vec3, matrix: &glm::Mat4) -> glm::Vec3 {
     let ws = glm::vec4(position.x, position.y, position.z, 1.0f32);
@@ -373,8 +373,27 @@ pub fn transform(position: &glm::Vec3, matrix: &glm::Mat4) -> glm::Vec3 {
     glm::vec3(vs.x, vs.y, vs.z)
 }
 
-/// Transform a 3D vector using a 4x4 matrix and return as a `glm::Vec4`
+/// Transforms a 3D vector using a 4x4 matrix and return as a `glm::Vec4`
 #[must_use]
 pub fn transform4(vector: &glm::Vec4, matrix: &glm::Mat4) -> glm::Vec4 {
     matrix * vector
+}
+
+/// Creates a set of `ImageView` objects from a set of `Image` objects
+///
+/// # Errors
+/// May return `RhError`
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan///
+pub fn create_image_views(
+    images: &[Arc<Image>],
+) -> Result<Vec<Arc<ImageView>>, RhError> {
+    let mut ret = Vec::new();
+    for image in images {
+        ret.push(
+            ImageView::new_default(image.clone()).map_err(Validated::unwrap)?,
+        );
+    }
+    Ok(ret)
 }

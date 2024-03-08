@@ -1,4 +1,4 @@
-use log::info;
+use log::{info, trace};
 use vulkano::sync::GpuFuture;
 
 pub struct FrameControl {
@@ -40,5 +40,17 @@ impl FrameControl {
         self.previous_fence_index = self.fence_index;
         self.fence_index = (self.fence_index + 1) % self.frames_in_flight;
         self.frame_count += 1;
+        trace!(
+            "update fence_index={} previous_fence_index={} frame_count={}",
+            self.previous_fence_index,
+            self.fence_index,
+            self.frame_count
+        );
+    }
+
+    /// Takes the value of the current fence, returing it and replacing it with
+    /// `None`
+    pub fn take(&mut self) -> Option<Box<dyn GpuFuture>> {
+        self.fences[self.fence_index].take()
     }
 }

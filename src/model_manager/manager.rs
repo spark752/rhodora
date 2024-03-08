@@ -16,7 +16,7 @@ use crate::{
     mesh_import::{Batch, ImportMaterial, MeshLoaded, Style},
     pbr_lights::PbrLightTrait,
     rh_error::RhError,
-    texture::Manager as TextureManager,
+    texture::TextureManager,
     types::{CameraTrait, DeviceAccess, RenderFormat},
     util,
     vertex::{Format, RigidFormat, SkinnedFormat},
@@ -72,7 +72,10 @@ impl Manager {
         mem_allocator: Arc<StandardMemoryAllocator>,
         render_format: RenderFormat,
     ) -> Result<Self, RhError> {
-        // TextureManager lets us share textures to avoid memory waste
+        // TextureManager lets us share textures to avoid memory waste.
+        // Why an `Arc` instead of direct ownership? An application can
+        // create a multithreaded loading routine that gets this and
+        // uses it with fewer lifetime complications.
         let texture_manager =
             Arc::new(TextureManager::new(mem_allocator.clone()));
 
