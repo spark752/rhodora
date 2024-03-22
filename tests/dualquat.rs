@@ -51,6 +51,14 @@ fn check_unit(dq: &DualQuat) {
     assert!(c.x && c.y && c.z && c.w);
 }
 
+/// Compare two dual quaternions for approximate equality
+fn compare(dq1: &DualQuat, &dq2: &DualQuat) {
+    let c = glm::quat_equal_eps(&dq1.real, &dq2.real, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+    let c = glm::quat_equal_eps(&dq1.dual, &dq2.dual, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+}
+
 /// Tests `DualQuat::default`
 #[test]
 fn default() {
@@ -60,9 +68,55 @@ fn default() {
     assert_eq!(dq.dual, glm::quat(0.0f32, 0.0f32, 0.0f32, 0.0f32));
 }
 
+/// Tests `DualQuat::new`
+#[test]
+fn new() {
+    init_tests();
+
+    // Create the dual quaternion for testing
+    let rot = glm::quat_angle_axis(
+        -1.491f32,
+        &glm::vec3(0.620174f32, -0.248069f32, 0.744208f32),
+    );
+    let trans = glm::vec3(-12.6f32, 1204.0f32, 0.004f32);
+    let dq1 = DualQuat::new(&rot, &trans);
+
+    // Check for unit length
+    check_unit(&dq1);
+
+    // Build another dual quaternion manually to compare
+    // The dual quaternion real part is just the `rot` quaternion defined
+    // above. The dual part is based on:
+    //  d = 1/2 * t * r
+    // where t is the "pure" quaternion version of `trans` (a quaternion with
+    // scalar part = 0) and r is `rot`.
+    let pure = glm::quat(trans.x, trans.y, trans.z, 0.0f32);
+    let dual = 0.5f32 * pure * rot;
+    let dq2 = DualQuat { real: rot, dual };
+
+    // Compare
+    let c = glm::quat_equal_eps(&dq1.real, &dq2.real, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+    let c = glm::quat_equal_eps(&dq1.dual, &dq2.dual, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+
+    // Convert to matrices to compare. This test is basically the same as
+    // the test for `to_mat4`.
+    let m1 = glm::Mat4::identity();
+    let m1 = glm::translate(&m1, &trans);
+    let m1 = m1 * glm::quat_to_mat4(&rot);
+    info!("new m1={:?}", m1);
+    let m2 = dualquat::to_mat4(&dq1);
+    info!("new m2={:?}", m2);
+
+    // Compare
+    let c = glm::equal_columns_eps(&m1, &m2, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+}
+
 /// Tests DualQuat `From` trait for converting to a GLSL shader friendly array
 #[test]
-fn from() {
+fn from_for_glsl() {
     let dq = DualQuat {
         real: glm::quat(1.0, 2.0, 3.0, 4.0),
         dual: glm::quat(5.0, 6.0, 7.0, 8.0),
@@ -84,6 +138,55 @@ fn from() {
             && m[1][2] == dq.dual.k
             && m[1][3] == dq.dual.w
     );
+}
+
+/// Tests DualQuat `From` trait for converting from a 4x4 matrix array
+#[test]
+fn from_for_array() {
+    init_tests();
+
+    // This should be a valid rotation and translation matrix
+    let arr: [[f32; 4]; 4] = {
+        [
+            [1.0f32, 0.0f32, 0.0f32, 0.0f32], // column 0
+            [0.0f32, 0.3584f32, -0.9336f32, 0.0f32], // column 1
+            [0.0f32, 0.9336f32, 0.3584f32, 0.0f32], // column 2
+            [5.0f32, 7.0f32, 9.0f32, 1.0f32], // column 3
+        ]
+    };
+
+    // Comparison conversion
+    let m1: glm::Mat4 = arr.into();
+    let dq1 = dualquat::from_mat4(&m1);
+    info!("from_for_array dq1={:?}", dq1);
+
+    // Value to test
+    let dq2: DualQuat = arr.into();
+    info!("from for array dq2={:?}", dq2);
+
+    compare(&dq1, &dq2);
+
+    // This should not actually work as a unit dual quaternion but nothing
+    // dangerous should happen
+    let arr: [[f32; 4]; 4] = {
+        [
+            [3.0f32, 0.0f32, 8.0f32, 0.0f32], // column 0
+            [0.0f32, 4.0f32, 5.0f32, 0.0f32], // column 1
+            [9.0f32, 6.0f32, 7.0f32, 0.0f32], // column 2
+            [0.0f32, 1.0f32, 2.0f32, 1.0f32], // column 3
+        ]
+    };
+
+    // Comparison conversion
+    let m1: glm::Mat4 = arr.into();
+    let dq1 = dualquat::from_mat4(&m1);
+    info!("from_for_array dq1={:?}", dq1);
+
+    // Value to test
+    let dq2: DualQuat = arr.into();
+    info!("from for array dq2={:?}", dq2);
+
+    compare(&dq1, &dq2);
 }
 
 /// Tests `DualQuat::add`
@@ -221,8 +324,8 @@ fn to_mat4() {
         let m2 = glm::quat_to_mat4(&dq.real); // Rotation only
                                               //info!("result m1={:?}", m1);
                                               //info!("result m2={:?}", m2);
-        let compare = glm::equal_columns_eps(&m1, &m2, EPSILON);
-        assert!(compare.x && compare.y && compare.z && compare.w);
+        let c = glm::equal_columns_eps(&m1, &m2, EPSILON);
+        assert!(c.x && c.y && c.z && c.w);
     }
 
     init_tests();
@@ -236,7 +339,9 @@ fn to_mat4() {
     assert_eq!(m, glm::Mat4::identity());
 
     // Rotation only dual quaternions should produce the same result as
-    // a standard quaternion converted to matrix by glm.
+    // a standard quaternion converted to matrix by glm. Comparisons are
+    // done by the `rotation` function above. Debug output is provided to
+    // visually inspect the matrix layout if desired.
 
     // Z axis rotation should have matrix values in upper left 4
     let dq = DualQuat {
@@ -271,7 +376,31 @@ fn to_mat4() {
     info!("Y axis rotation test dq={:?}", dq);
     rotation(&dq);
 
-    // TODO: Add some more testing including translations
+    // Build up a matrix. glm has functions for quaternions, but doesn't
+    // seem to have an equivalent to `translate` that would modify an existing
+    // matrix using a quaternion rotation. Instead the quaternion can be
+    // converted to a matrix and multiplied. The order of all this has to be
+    // correct. Debug output is provided for visual inspection.
+    let rot = glm::quat_angle_axis(
+        std::f32::consts::FRAC_PI_3,
+        &glm::vec3(0.811107f32, 0.486664f32, 0.324443f32),
+    );
+    let trans = glm::vec3(14.2f32, -3.36f32, 18.9f32);
+    let m1 = glm::Mat4::identity();
+    let m1 = glm::translate(&m1, &trans);
+    let m1 = m1 * glm::quat_to_mat4(&rot);
+    info!("to_mat4 m1={:?}", m1);
+
+    // Create a unit dual quaternion
+    let dq = DualQuat::new(&rot, &trans);
+
+    // Finally the actual function to test can be called
+    let m2 = dualquat::to_mat4(&dq);
+    info!("to_mat4 m2={:?}", m2);
+
+    // Compare
+    let c = glm::equal_columns_eps(&m1, &m2, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
 }
 
 /// Tests `DualQuat::from_mat4`
@@ -279,11 +408,11 @@ fn to_mat4() {
 fn from_mat4() {
     // Arbitrary input matrix
     let m1 = glm::Mat4::identity();
-    let m1 = glm::rotate_z(&m1, -0.261);
     let m1 = glm::translate(
         &m1, //
         &glm::vec3(31.0f32, -192.52f32, -0.34f32),
     );
+    let m1 = glm::rotate_z(&m1, -0.261f32);
 
     // Function to test
     let dq = dualquat::from_mat4(&m1);
@@ -297,16 +426,16 @@ fn from_mat4() {
     assert!(c.x && c.y && c.z && c.w);
 }
 
-/// Tests `DualQuat::from_mat4_swiz`
+/// Tests `DualQuat::from_mat4_swizzle`
 #[test]
-fn from_mat4_swiz() {
+fn from_mat4_swizzle() {
     // Arbitrary input matrix
     let m1 = glm::Mat4::identity();
-    let m1 = glm::rotate_x(&m1, 1.42);
     let m1 = glm::translate(
         &m1, //
         &glm::vec3(42.2f32, -3.0f32, 0.5f32),
     );
+    let m1 = glm::rotate_x(&m1, 1.42f32);
 
     // Manual swizzle
     let dq1 = dualquat::from_mat4(&m1);
@@ -316,7 +445,32 @@ fn from_mat4_swiz() {
     };
 
     // Swizzle
-    let dq2 = dualquat::from_mat4_swiz(&m1);
+    let dq2 = dualquat::from_mat4_swizzle(&m1);
+
+    // Verify result is a unit dual quaternion
+    check_unit(&dq2);
+
+    // Compare
+    let c = glm::quat_equal_eps(&dq1.real, &dq2.real, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+    let c = glm::quat_equal_eps(&dq1.dual, &dq2.dual, EPSILON);
+    assert!(c.x && c.y && c.z && c.w);
+}
+
+/// Tests 'DualQuat::swizzle`
+#[test]
+fn swizzle() {
+    // Arbitrary input matrix
+    let m1 = glm::Mat4::identity();
+    let m1 = glm::translate(
+        &m1, //
+        &glm::vec3(-5.33f32, 0.00326f32, 9.31f32),
+    );
+    let m1 = glm::rotate_x(&m1, -0.777f32);
+
+    // Swizzle different ways
+    let dq1 = dualquat::from_mat4_swizzle(&m1);
+    let dq2 = dualquat::swizzle(&dualquat::from_mat4(&m1));
 
     // Verify result is a unit dual quaternion
     check_unit(&dq2);

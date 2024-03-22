@@ -19,8 +19,8 @@ pub struct DualQuat {
     pub dual: glm::Quat,
 }
 
-/// Default is the dual quaternion identity value
 impl Default for DualQuat {
+    /// Default is the dual quaternion identity value
     fn default() -> Self {
         Self {
             real: glm::quat(0.0f32, 0.0f32, 0.0f32, 1.0f32),
@@ -29,7 +29,19 @@ impl Default for DualQuat {
     }
 }
 
-/// Conversion to GLSL shader ready mat2x4
+impl DualQuat {
+    /// Creates a unit dual quaternion from a unit rotation quaternion and a
+    /// translation vector
+    #[must_use]
+    pub fn new(rot: &glm::Quat, trans: &glm::Vec3) -> Self {
+        let pure = glm::quat(trans.x, trans.y, trans.z, 0.0f32);
+        let dual = 0.5f32 * pure * rot; // 1/2 *t * r
+        Self { real: *rot, dual }
+    }
+}
+
+/// Conversion from dual quaternion to GLSL shader ready mat2x4. This is a
+/// matrix for transfer data, not for doing matrix math.
 impl From<DualQuat> for [[f32; 4]; 2] {
     fn from(dq: DualQuat) -> [[f32; 4]; 2] {
         [
@@ -49,21 +61,30 @@ impl From<DualQuat> for [[f32; 4]; 2] {
     }
 }
 
+/// Conversion from 4x4 matrix array (not glm) into a dual quaternion
+impl From<[[f32; 4]; 4]> for DualQuat {
+    fn from(m: [[f32; 4]; 4]) -> Self {
+        // It may be more efficient to do this without going through glm,
+        // but maybe not. It is certainly simpler to do it like this.
+        from_mat4(&m.into())
+    }
+}
+
 /// Adds two dual quaternions
 #[must_use]
-pub fn add(q1: &DualQuat, q2: &DualQuat) -> DualQuat {
+pub fn add(dq1: &DualQuat, dq2: &DualQuat) -> DualQuat {
     DualQuat {
-        real: q1.real + q2.real,
-        dual: q1.dual + q2.dual,
+        real: dq1.real + dq2.real,
+        dual: dq1.dual + dq2.dual,
     }
 }
 
 /// Multiplies two dual quaternions
 #[must_use]
-pub fn mul(q1: &DualQuat, q2: &DualQuat) -> DualQuat {
+pub fn mul(dq1: &DualQuat, dq2: &DualQuat) -> DualQuat {
     DualQuat {
-        real: q1.real * q2.real,
-        dual: q1.real * q2.dual + q1.dual * q2.real,
+        real: dq1.real * dq2.real,
+        dual: dq1.real * dq2.dual + dq1.dual * dq2.real,
     }
 }
 
@@ -71,10 +92,10 @@ pub fn mul(q1: &DualQuat, q2: &DualQuat) -> DualQuat {
 /// to conjugate a dual quaternion. This is the version most useful for unit
 /// quaternions where both the real and dual part are conjugated separately.
 #[must_use]
-pub fn conjugate(q: &DualQuat) -> DualQuat {
+pub fn conjugate(dq: &DualQuat) -> DualQuat {
     DualQuat {
-        real: q.real.conjugate(),
-        dual: q.dual.conjugate(),
+        real: dq.real.conjugate(),
+        dual: dq.dual.conjugate(),
     }
 }
 
@@ -125,11 +146,20 @@ pub fn from_mat4(m: &glm::Mat4) -> DualQuat {
 /// Creates a dual quaternion from a `glm::Mat4` which does not contain scaling
 /// and swizzles it from Y axis up to Z axis up
 #[must_use]
-pub fn from_mat4_swiz(m: &glm::Mat4) -> DualQuat {
+pub fn from_mat4_swizzle(m: &glm::Mat4) -> DualQuat {
     let real = glm::to_quat(m); // Ignores translation but scale is no good
     let real = glm::quat(real.i, -real.k, real.j, real.w);
     let t = glm::column(m, 3); // Translation column
     let from_t = glm::quat(t.x, -t.z, t.y, 0.0f32);
     let dual = 0.5f32 * from_t * real;
     DualQuat { real, dual }
+}
+
+// Swizzles a dual quaternion from Y axis up to Z axis up
+#[must_use]
+pub fn swizzle(dq: &DualQuat) -> DualQuat {
+    DualQuat {
+        real: glm::quat(dq.real.i, -dq.real.k, dq.real.j, dq.real.w),
+        dual: glm::quat(dq.dual.i, -dq.dual.k, dq.dual.j, dq.dual.w),
+    }
 }
