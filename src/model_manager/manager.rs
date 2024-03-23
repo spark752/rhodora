@@ -367,6 +367,14 @@ impl Manager {
         &self.models[index].matrix
     }
 
+    /// Temporary thing until we figure out the real API
+    ///
+    /// # Panics
+    /// Will panic if the index is out of range
+    pub fn update_joints(&mut self, index: usize, joints: JointTransforms) {
+        self.models[index].joints = joints;
+    }
+
     /// Renders all the models. Provide a command buffer which has had
     /// `begin_rendering` and `set_viewport` called on it.
     ///

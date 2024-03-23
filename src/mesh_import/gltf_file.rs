@@ -1,28 +1,51 @@
+// Some code inspired by
+// https://github.com/KhronosGroup/glTF-Tutorials/
+
 use super::types::{
     FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh,
 };
 use crate::{
+    anim::{
+        Interpolation, JointInfo, RawAnimation, Rotation, RotationChannel,
+        Skeleton, Translation, TranslationChannel,
+    },
+    dualquat::DualQuat,
     rh_error::RhError,
     vertex::{IndexBuffer, InterBuffer},
 };
+use ahash::{HashMap, HashMapExt};
 use gltf::{
     accessor::Dimensions,
-    buffer,
+    animation::util::ReadOutputs,
+    buffer::{self, Data},
     image::Source,
-    mesh::util::{
-        ReadIndices, ReadJoints, ReadNormals, ReadPositions, ReadTexCoords,
-        ReadWeights,
-    },
+    mesh::util::{ReadIndices, ReadJoints, ReadNormals, ReadPositions},
     mesh::Mode,
-    Document, Gltf, Primitive, Semantic,
+    Document, Gltf, Node, Primitive, Semantic,
 };
-use log::{info, trace, warn};
+use log::{debug, error, info, trace, warn};
+use nalgebra_glm as glm;
 use std::{fs, io, path::Path};
+
+/// Comparison value for approximate equality of two scale vectors
+const SCALE_EPSILON: f32 = 0.005;
+
+#[derive(Clone, Debug)]
+struct NodeInfo {
+    name: String,
+    parent: usize,
+    root: usize,
+    children: Vec<usize>,
+    translation: glm::Vec3,
+    rotation: glm::Quat,
+    scale: glm::Vec3,
+}
 
 // Validate a glTF for compatibility. Returns index and vertex count.
 fn validate(p: &Primitive) -> Result<(usize, usize), RhError> {
     // Mesh must be made of indexed triangles
     if p.mode() != Mode::Triangles {
+        error!("Not a triangle mesh");
         return Err(RhError::UnsupportedFormat);
     }
     let indices = (p.indices().ok_or(RhError::UnsupportedFormat))?;
@@ -108,10 +131,7 @@ where
         buffers[0].len(),
     );
     if buffer_count != 1 {
-        warn!(
-            "buffer count={} is not 1. This probably won't work",
-            buffer_count
-        );
+        warn!("buffer count={} is not 1", buffer_count);
     }
 
     Ok((gltf.document, buffers))
@@ -121,8 +141,8 @@ where
 /// supported. The current focus of the project is on models which share
 /// textures, therefore glTF files that embed images are not supported.
 /// Tested with files exported from Blender 3.6.8 using the "glTF Separate"
-/// option. glTF defines +Y up, +Z forward so `swizzle` should usually be
-/// set (and is the default.)
+/// option. glTF defines +Y up, +Z forward so `swizzle` is always used and
+/// therefore ignored.
 ///
 /// # Errors
 /// May return `RhError`
@@ -134,7 +154,6 @@ pub fn load(
     vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let scale = file.scale;
-    let swizzle = file.swizzle;
     let mut submeshes = Vec::new();
     let mut first_index = 0u32;
     let mut vertex_offset = 0i32;
@@ -145,7 +164,7 @@ pub fn load(
     // Can contain multiple meshes which can contain multiple primitives. Each
     // primitive is treated as a submesh to match the .obj format support.
     for m in document.meshes() {
-        info!("Mesh={}, Name={:?}", m.index(), m.name());
+        info!("mesh={}, name={:?}", m.index(), m.name());
         for p in m.primitives() {
             // Validate certain aspects of the glTF. These should include that
             // the number of positions is equal to the number of normals etc.
@@ -154,10 +173,11 @@ pub fn load(
             let (idx_count, vert_count) = validate(&p)?;
 
             // Create a reader for the data buffer
-            let reader = p.reader(|_| Some(&buffers[0]));
+            let reader = p.reader(|x| Some(&buffers[x.index()]));
 
             // Read the indices and store them as 16 bits directly to the
-            // output buffer
+            // output buffer. There is a `into_u32` provided but not one for
+            // 16 bits.
             let idx_data =
                 reader.read_indices().ok_or(RhError::UnsupportedFormat)?;
             match idx_data {
@@ -186,7 +206,7 @@ pub fn load(
             let mut verts = Vec::new();
 
             // Read and store positions into the import vertex buffer, scaling
-            // and swizzling if needed
+            // if needed
             let pos_data =
                 reader.read_positions().ok_or(RhError::UnsupportedFormat)?;
             let ReadPositions::Standard(it) = pos_data else {
@@ -194,22 +214,14 @@ pub fn load(
                 return Err(RhError::UnsupportedFormat);
             };
             for i in it {
-                let p = {
-                    if swizzle {
-                        [i[0] * scale, -i[2] * scale, i[1] * scale]
-                    } else {
-                        [i[0] * scale, i[1] * scale, i[2] * scale]
-                    }
-                };
                 let v = ImportVertex {
-                    position: p,
+                    position: [i[0] * scale, -i[2] * scale, i[1] * scale],
                     ..Default::default()
                 };
                 verts.push(v);
             }
 
-            // Read and store normals into the import vertex buffer, swizzling
-            // if needed
+            // Read and store normals into the import vertex buffer
             let norm_data =
                 reader.read_normals().ok_or(RhError::UnsupportedFormat)?;
             let ReadNormals::Standard(it) = norm_data else {
@@ -218,24 +230,13 @@ pub fn load(
             };
             for (i, norm) in it.enumerate() {
                 if i < verts.len() {
-                    verts[i].normal = {
-                        if swizzle {
-                            [norm[0], -norm[2], norm[1]]
-                        } else {
-                            [norm[0], norm[1], norm[2]]
-                        }
-                    };
+                    verts[i].normal = [norm[0], -norm[2], norm[1]];
                 }
             }
 
             // Read and store the texture coordinates if they exist
             if let Some(uv_data) = reader.read_tex_coords(0) {
-                let ReadTexCoords::F32(it) = uv_data else {
-                    // Could support these if we come up with a test case
-                    warn!("Unsupported UV format");
-                    return Err(RhError::UnsupportedFormat);
-                };
-                for (i, uv) in it.enumerate() {
+                for (i, uv) in uv_data.into_f32().enumerate() {
                     if i < verts.len() {
                         verts[i].tex_coord = uv;
                     }
@@ -245,17 +246,17 @@ pub fn load(
             // Read the store the joints if they exist
             if let Some(joint_data) = reader.read_joints(0) {
                 let ReadJoints::U8(joint_it) = joint_data else {
+                    // We could try fitting these into u8 but if that wasn't
+                    // used by the file it probably means they won't fit
                     warn!("Unsupported joint format");
                     return Err(RhError::UnsupportedFormat);
                 };
-                let weight_data =
-                    reader.read_weights(0).ok_or(RhError::UnsupportedFormat)?;
-                let ReadWeights::F32(weight_it) = weight_data else {
-                    warn!("Unsupported weight format");
-                    return Err(RhError::UnsupportedFormat);
-                };
+                let weight_data = reader
+                    .read_weights(0)
+                    .ok_or(RhError::UnsupportedFormat)?
+                    .into_f32();
                 for (i, (id_array, weights)) in
-                    joint_it.zip(weight_it).enumerate()
+                    joint_it.zip(weight_data).enumerate()
                 {
                     trace!("Joint ids={:?} weights={:?}", id_array, weights);
                     if i < verts.len() {
@@ -267,7 +268,7 @@ pub fn load(
 
             // Validate that we have the expected amount of information
             if vert_count != verts.len() {
-                warn!(
+                error!(
                     "Vertex count mismatch {} != {}",
                     vert_count,
                     verts.len()
@@ -357,4 +358,320 @@ fn load_materials(
         materials.push(material);
     }
     materials
+}
+
+/// Recursive node tree traversal
+fn traverse_tree(
+    node: &Node,
+    tree: &mut HashMap<usize, NodeInfo>,
+    parent: usize,
+    root: usize,
+) {
+    // Walk children of this node
+    for child in node.children() {
+        traverse_tree(&child, tree, node.index(), root);
+    }
+
+    // Collect node information
+    let name = node
+        .name()
+        .map_or_else(|| format!("node.{}", node.index()), ToString::to_string);
+
+    let mut children = Vec::new();
+    for child in node.children() {
+        children.push(child.index());
+    }
+    let (t, r, s) = node.transform().decomposed();
+
+    // Insert it into a hashmap
+    tree.insert(
+        node.index(),
+        NodeInfo {
+            name,
+            parent,
+            root,
+            children,
+            translation: t.into(),
+            rotation: r.into(),
+            scale: s.into(),
+        },
+    );
+}
+
+/// Creates `JointInfo` from `NodeInfo` by adding the inverse binding
+fn joint_info_from_node(node_info: &NodeInfo, inv_bind: DualQuat) -> JointInfo {
+    JointInfo {
+        name: node_info.name.clone(),
+        parent: node_info.parent,
+        children: node_info.children.clone(),
+        inv_bind,
+        bind_translation: node_info.translation,
+        bind_rotation: node_info.rotation,
+    }
+}
+
+fn load_skeleton(
+    document: &Document,
+    buffers: &[Data],
+) -> Result<Vec<Skeleton>, RhError> {
+    let mut ret = Vec::new();
+
+    // Full node tree
+    let mut full_tree = HashMap::<usize, NodeInfo>::new();
+    for scene in document.scenes() {
+        for node in scene.nodes() {
+            let index = node.index();
+            traverse_tree(&node, &mut full_tree, index, index);
+        }
+    }
+    debug!("full tree={:?}", full_tree);
+
+    // Skins
+    for skin in document.skins() {
+        let reader = skin.reader(|x| Some(&buffers[x.index()]));
+        let Some(iter) = reader.read_inverse_bind_matrices() else {
+            error!("Missing inverse bind matrices");
+            return Err(RhError::UnsupportedFormat);
+        };
+
+        let mut current_root: Option<usize> = None;
+        let mut joint_tree = HashMap::<usize, JointInfo>::new();
+        let mut joint_to_node = Vec::new();
+
+        for (ibm, node) in iter.zip(skin.joints()) {
+            let node_index = node.index();
+            joint_to_node.push(node_index);
+            let Some(node_info) = full_tree.get(&node_index) else {
+                error!(
+                    "skin {} has no node info for node index {}",
+                    skin.index(),
+                    node_index,
+                );
+                return Err(RhError::UnsupportedFormat);
+            };
+
+            // All of the root nodes for this skin should be the same
+            if let Some(x) = current_root {
+                if x != node_info.root {
+                    warn!("skin {} has multiple root nodes", skin.index());
+                }
+            }
+            current_root = Some(node_info.root);
+
+            // Scaled joints are not supported
+            let compare = glm::not_equal_eps(
+                &node_info.scale,
+                &glm::vec3(1.0f32, 1.0f32, 1.0f32),
+                SCALE_EPSILON,
+            );
+            if compare.x || compare.y || compare.z {
+                error!(
+                    "skin {}, node index {}, has unsupported scale",
+                    skin.index(),
+                    node_index
+                );
+                return Err(RhError::UnsupportedFormat);
+            }
+
+            // Insert into the joint info hashmap
+            joint_tree.insert(
+                node_index,
+                joint_info_from_node(node_info, ibm.into()),
+            );
+        }
+
+        // Make sure we found root node
+        let Some(root_index) = current_root else {
+            error!("No root node found for skin {}", skin.index());
+            return Err(RhError::UnsupportedFormat);
+        };
+
+        // Make sure that root node matches what gltf crate says.
+        // Ideally tree traversal could be replaced by using this, but the else
+        // case is always triggered by test files so more research is needed.
+        if let Some(alt_root) = skin.skeleton() {
+            if root_index != alt_root.index() {
+                error!("Conflicting root nodes for skin {}", skin.index());
+                return Err(RhError::UnsupportedFormat);
+            }
+        } else {
+            warn!(
+                "skin {} does not report a root node, using node index {}",
+                skin.index(),
+                root_index
+            );
+        }
+
+        // Make sure root node is in joint tree without disturbing it
+        if joint_tree.get(&root_index).is_none() {
+            if let Some(node_info) = full_tree.get(&root_index) {
+                debug!(
+                    "Adding root node {} for skin {}",
+                    root_index,
+                    skin.index()
+                );
+                // Since this isn't a joint, there isn't an inverse binding to
+                // store, but there still could be a binding (node translation &
+                // rotation). This should be ok since the binding may effect
+                // children, but the inverse binding is only used in the final
+                // calculation of the joint transform... and this isn't a joint.
+                joint_tree.insert(
+                    root_index,
+                    joint_info_from_node(node_info, DualQuat::default()),
+                );
+            } else {
+                error!("No root node found for skin {}", skin.index());
+                return Err(RhError::UnsupportedFormat);
+            }
+        }
+
+        // Store
+        let name = skin.name().map_or_else(
+            || format!("skin.{}", skin.index()),
+            ToString::to_string,
+        );
+        ret.push(Skeleton {
+            name,
+            root: root_index,
+            joint_to_node,
+            tree: joint_tree,
+        });
+    }
+    Ok(ret)
+}
+
+fn load_animations_impl(
+    document: &Document,
+    buffers: &[Data],
+) -> Result<Vec<RawAnimation>, RhError> {
+    use gltf::accessor::Iter;
+
+    let mut ret = Vec::new();
+    for animation in document.animations() {
+        debug!("animation name={:?}", animation.name());
+        let mut r_channels = HashMap::<usize, RotationChannel>::new();
+        let mut t_channels = HashMap::<usize, TranslationChannel>::new();
+
+        for channel in animation.channels() {
+            let node = channel.target().node();
+            let interpolation = match channel.sampler().interpolation() {
+                gltf::animation::Interpolation::Step => Interpolation::Step,
+                gltf::animation::Interpolation::Linear => Interpolation::Linear,
+                gltf::animation::Interpolation::CubicSpline => {
+                    Interpolation::CubicSpline
+                }
+            };
+            let reader = channel.reader(|x| Some(&buffers[x.index()]));
+            let times: Vec<f32> = if let Some(inputs) = reader.read_inputs() {
+                match inputs {
+                    Iter::Standard(times) => times.collect(),
+                    Iter::Sparse(_) => {
+                        error!("Unsupported sparse animation format");
+                        return Err(RhError::UnsupportedFormat);
+                    }
+                }
+            } else {
+                error!("Animation does not contain a sampler");
+                return Err(RhError::UnsupportedFormat);
+            };
+
+            // Currently no swizzling is done here and data stays in
+            // glTF Y axis up until converted to Z up at the end
+            if let Some(outputs) = reader.read_outputs() {
+                match outputs {
+                    ReadOutputs::Rotations(x) => {
+                        let mut chan = Vec::new();
+                        let q: Vec<glm::Quat> =
+                            x.into_f32().map(Into::into).collect();
+                        for (time, data) in times.iter().zip(&q) {
+                            chan.push(Rotation {
+                                time: *time,
+                                data: *data,
+                            });
+                        }
+                        r_channels.insert(
+                            node.index(),
+                            RotationChannel {
+                                interpolation,
+                                channel: chan,
+                            },
+                        );
+                    }
+                    ReadOutputs::Translations(x) => {
+                        let mut chan = Vec::new();
+                        let v: Vec<glm::Vec3> = x.map(Into::into).collect();
+                        for (time, data) in times.iter().zip(&v) {
+                            chan.push(Translation {
+                                time: *time,
+                                data: *data,
+                            });
+                        }
+                        t_channels.insert(
+                            node.index(),
+                            TranslationChannel {
+                                interpolation,
+                                channel: chan,
+                            },
+                        );
+                    }
+                    ReadOutputs::Scales(x) => {
+                        for d in x {
+                            // Only a scale of 1 is supported. Warn if
+                            // another value is present.
+                            let scale: glm::Vec3 = d.into();
+                            let comp = glm::not_equal_eps(
+                                &scale,
+                                &glm::vec3(1.0, 1.0, 1.0),
+                                SCALE_EPSILON,
+                            );
+                            if comp.x || comp.y || comp.z {
+                                warn!(
+                                    "animation {} node {} scale ignored",
+                                    animation.index(),
+                                    node.index()
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    ReadOutputs::MorphTargetWeights(_) => {
+                        error!("Morphing not supported");
+                        return Err(RhError::UnsupportedFormat);
+                    }
+                }
+            } else {
+                error!("Animation does not contain a sampler output");
+                return Err(RhError::UnsupportedFormat);
+            };
+        }
+
+        // Store
+        let name = animation.name().map_or_else(
+            || format!("animation.{}", animation.index()),
+            ToString::to_string,
+        );
+        ret.push(RawAnimation {
+            name,
+            r_channels,
+            t_channels,
+        });
+    }
+    Ok(ret)
+}
+
+/// Loads skeleton and animation from a glTF file
+///
+/// # Errors
+/// May return `RhError`
+pub fn load_animations(
+    filename: &Path,
+) -> Result<(Vec<Skeleton>, Vec<RawAnimation>), RhError> {
+    let (document, buffers) = load_impl(filename)?;
+    let skeletons = load_skeleton(&document, &buffers)?;
+    let animations = load_animations_impl(&document, &buffers)?;
+
+    debug!("skeletons={:?}", skeletons);
+    debug!("animations={:?}", animations);
+
+    Ok((skeletons, animations))
 }

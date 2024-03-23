@@ -625,7 +625,7 @@ impl Boss {
         let benchmark = Instant::now();
         if let Some(limiter) = &self.limiter {
             let e = limiter.previous_instant.elapsed();
-            if e > Duration::from_micros(1500) {
+            if e > Duration::from_micros(5000) {
                 debug!("render_all slow start {:?} after limiter reset", e);
             }
         }
@@ -858,7 +858,7 @@ impl Boss {
                             limiter.previous_instant + limiter.target_duration,
                         );
                     } else {
-                        trace!("waiting due to limiter");
+                        //trace!("waiting due to limiter");
                     }
                 } else {
                     // Render everytime if limiter not set
