@@ -1,6 +1,6 @@
 use super::import;
 use crate::rh_error::RhError;
-use ahash::AHashMap;
+use ahash::{HashMap, HashMapExt};
 use log::info;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -9,15 +9,10 @@ use vulkano::{
     memory::allocator::StandardMemoryAllocator,
 };
 
-/// Texture caching in a multithread friendly way.
-/// Uses `ahash::AHashMap` in place of `std::collections::HashMap` only because
-/// ahash is already a dependency for egui integration.
-/// This struct may be sent across threads, so the cache is wrapped in a
-/// `parking_lot::Mutex`. This was selected over `std::Mutex` only because
-/// Vulkano and other packages already depend on it.
+/// Texture caching in a multithread friendly way
 pub struct Manager {
     mem_allocator: Arc<StandardMemoryAllocator>,
-    cache: Mutex<AHashMap<String, Arc<ImageView>>>,
+    cache: Mutex<HashMap<String, Arc<ImageView>>>,
 }
 
 impl Manager {
@@ -25,7 +20,7 @@ impl Manager {
         Self {
             mem_allocator,
             // Reserve space to perhaps avoid some realloc/rehash.
-            cache: Mutex::new(AHashMap::with_capacity(16)),
+            cache: Mutex::new(HashMap::with_capacity(16)),
         }
     }
 
