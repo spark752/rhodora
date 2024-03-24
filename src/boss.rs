@@ -2,7 +2,7 @@ use crate::{
     egui_integration::GuiTrait,
     frame_control::FrameControl,
     memory::Memory,
-    mesh_import::{Batch, FileToLoad, Style},
+    mesh_import::{Batch, ImportOptions, Style},
     model_manager::ModelManager,
     pbr_lights::PbrLightTrait,
     postprocess::PostProcess,
@@ -16,7 +16,7 @@ use crate::{
     vk_window::{Properties, VkWindow},
 };
 use log::{debug, error, info, trace};
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 use std::{sync::Arc, time::Duration};
 use vulkano::{
     command_buffer::{
@@ -722,12 +722,13 @@ impl Boss {
     pub fn load_mesh<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        file: &FileToLoad,
+        path: &Path,
+        import_options: &ImportOptions,
     ) -> Result<usize, RhError> {
         // Vertex format was once hard coded in lowest levels but now has made
         // it all the way up to here. Still some more to go.
         let mut batch = Batch::new(Style::Skinned);
-        batch.load(file)?;
+        batch.load(path, import_options)?;
         let ret = self.model_manager.process_batch(cbb, batch)?;
         Ok(ret[0])
     }
@@ -745,9 +746,10 @@ impl Boss {
     pub fn load_model<T>(
         &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        file: &FileToLoad,
+        path: &Path,
+        import_options: &ImportOptions,
     ) -> Result<usize, RhError> {
-        self.load_mesh(cbb, file)
+        self.load_mesh(cbb, path, import_options)
     }
 
     /// Loads a batch of meshes

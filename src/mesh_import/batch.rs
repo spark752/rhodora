@@ -1,6 +1,6 @@
 use super::{
     gltf_file, obj_file,
-    types::{FileToLoad, MeshLoaded},
+    types::{ImportOptions, MeshLoaded},
 };
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
@@ -49,24 +49,39 @@ impl Batch {
     ///
     /// # Errors
     /// May return `RhError`
-    pub fn load(&mut self, file: &FileToLoad) -> Result<(), RhError> {
+    pub fn load(
+        &mut self,
+        path: &Path,
+        import_options: &ImportOptions,
+    ) -> Result<(), RhError> {
         // The format specific loader writes directly to `vb` and returns data
         // to put in `meshes`.
         // Assume that files ending with ".obj" are OBJ format and anything
         // else is glTF.
         let mesh_loaded = {
-            if let Some(ext) = Path::new(&file.filename).extension() {
+            if let Some(ext) = path.extension() {
                 if ext.to_ascii_lowercase() == "obj" {
-                    obj_file::load(file, &mut self.vb_index, &mut self.vb_inter)
+                    obj_file::load(
+                        path,
+                        import_options,
+                        &mut self.vb_index,
+                        &mut self.vb_inter,
+                    )
                 } else {
                     gltf_file::load(
-                        file,
+                        path,
+                        import_options,
                         &mut self.vb_index,
                         &mut self.vb_inter,
                     )
                 }
             } else {
-                gltf_file::load(file, &mut self.vb_index, &mut self.vb_inter)
+                gltf_file::load(
+                    path,
+                    import_options,
+                    &mut self.vb_index,
+                    &mut self.vb_inter,
+                )
             }
         }?;
         self.meshes.push(mesh_loaded);

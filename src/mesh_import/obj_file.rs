@@ -1,5 +1,7 @@
+use std::path::Path;
+
 use super::types::{
-    FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh,
+    ImportMaterial, ImportOptions, ImportVertex, MeshLoaded, Submesh,
 };
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
@@ -12,12 +14,13 @@ use log::{error, info};
 /// # Errors
 /// May return `RhError`
 pub fn load(
-    file: &FileToLoad,
+    path: &Path,
+    import_options: &ImportOptions,
     vb_index: &mut IndexBuffer,
     vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
-    let load_result = tobj::load_obj(&file.filename, &tobj::GPU_LOAD_OPTIONS);
-    process_obj(file, load_result, vb_index, vb_inter)
+    let load_result = tobj::load_obj(path, &tobj::GPU_LOAD_OPTIONS);
+    process_obj(import_options, load_result, vb_index, vb_inter)
 }
 
 /// Process loaded Wavefront OBJ format data. Called by `load_obj` or can be
@@ -26,7 +29,7 @@ pub fn load(
 /// # Errors
 /// May return `RhError`
 pub fn process_obj(
-    file: &FileToLoad,
+    import_options: &ImportOptions,
     load_result: tobj::LoadResult,
     vb_index: &mut IndexBuffer,
     vb_inter: &mut InterBuffer,
@@ -34,8 +37,8 @@ pub fn process_obj(
     let (tobj_models, tobj_materials) = load_result?;
     info!("Found {} submeshes", tobj_models.len());
 
-    let scale = file.scale;
-    let swizzle = file.swizzle;
+    let scale = import_options.scale;
+    let swizzle = import_options.swizzle;
 
     let mut submeshes = Vec::new();
     let mut first_index = 0u32;
@@ -148,6 +151,6 @@ pub fn process_obj(
     Ok(MeshLoaded {
         submeshes,
         materials,
-        order_option: file.order_option.clone(),
+        order_option: import_options.order_option.clone(),
     })
 }

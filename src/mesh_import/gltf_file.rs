@@ -2,7 +2,7 @@
 // https://github.com/KhronosGroup/glTF-Tutorials/
 
 use super::types::{
-    FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh,
+    ImportMaterial, ImportOptions, ImportVertex, MeshLoaded, Submesh,
 };
 use crate::{
     anim::{
@@ -149,17 +149,18 @@ where
 //#[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_lines)]
 pub fn load(
-    file: &FileToLoad,
+    path: &Path,
+    import_options: &ImportOptions,
     vb_index: &mut IndexBuffer,
     vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
-    let scale = file.scale;
+    let scale = import_options.scale;
     let mut submeshes = Vec::new();
     let mut first_index = 0u32;
     let mut vertex_offset = 0i32;
 
     // Load the gltf file and mesh data but not the textures
-    let (document, buffers) = load_impl(&file.filename)?;
+    let (document, buffers) = load_impl(path)?;
 
     // Can contain multiple meshes which can contain multiple primitives. Each
     // primitive is treated as a submesh to match the .obj format support.
@@ -303,12 +304,10 @@ pub fn load(
     Ok(MeshLoaded {
         submeshes,
         materials: {
-            let base_path = Path::new(&file.filename)
-                .parent()
-                .unwrap_or_else(|| Path::new("."));
+            let base_path = path.parent().unwrap_or_else(|| Path::new("."));
             load_materials(base_path, &document)
         },
-        order_option: file.order_option.clone(),
+        order_option: import_options.order_option.clone(),
     })
 }
 

@@ -42,17 +42,15 @@ impl Default for ImportMaterial {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub struct FileToLoad {
-    pub filename: String, // Used for load_obj but not process_obj
+pub struct ImportOptions {
     pub scale: f32,
     pub swizzle: bool,
     pub order_option: Option<Vec<usize>>,
 }
 
-impl Default for FileToLoad {
+impl Default for ImportOptions {
     fn default() -> Self {
         Self {
-            filename: String::new(),
             scale: 1.0f32,
             swizzle: true,
             order_option: None,

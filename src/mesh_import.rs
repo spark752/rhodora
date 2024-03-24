@@ -6,5 +6,5 @@ mod types;
 // Re-exports
 pub use {
     batch::{Batch, Style},
-    types::{FileToLoad, ImportMaterial, ImportVertex, MeshLoaded, Submesh},
+    types::{ImportMaterial, ImportOptions, ImportVertex, MeshLoaded, Submesh},
 };
