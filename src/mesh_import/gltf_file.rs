@@ -9,7 +9,7 @@ use crate::{
         Interpolation, JointInfo, RawAnimation, Rotation, RotationChannel,
         Skeleton, Translation, TranslationChannel,
     },
-    dualquat::DualQuat,
+    dualquat::{self, DualQuat},
     rh_error::RhError,
     vertex::{IndexBuffer, InterBuffer},
 };
@@ -397,6 +397,16 @@ fn traverse_tree(
     );
 }
 
+/// Swizzles a quaternion from Y axis up to Z axis up
+fn quat_swizzle(q: &glm::Quat) -> glm::Quat {
+    glm::quat(q.i, -q.k, q.j, q.w)
+}
+
+/// Swizzles a vector from Y axis up to Z axis up
+fn vec_swizzle(v: &glm::Vec3) -> glm::Vec3 {
+    glm::vec3(v.x, -v.z, v.y)
+}
+
 /// Creates `JointInfo` from `NodeInfo` by adding the inverse binding
 fn joint_info_from_node(node_info: &NodeInfo, inv_bind: DualQuat) -> JointInfo {
     JointInfo {
@@ -404,8 +414,8 @@ fn joint_info_from_node(node_info: &NodeInfo, inv_bind: DualQuat) -> JointInfo {
         parent: node_info.parent,
         children: node_info.children.clone(),
         inv_bind,
-        bind_translation: node_info.translation,
-        bind_rotation: node_info.rotation,
+        bind_translation: vec_swizzle(&node_info.translation), // Z axis up
+        bind_rotation: quat_swizzle(&node_info.rotation),      // Z axis up
     }
 }
 
@@ -475,7 +485,10 @@ fn load_skeleton(
             // Insert into the joint info hashmap
             joint_tree.insert(
                 node_index,
-                joint_info_from_node(node_info, ibm.into()),
+                joint_info_from_node(
+                    node_info,
+                    dualquat::swizzle(&ibm.into()), // Z axis up
+                ),
             );
         }
 
@@ -585,7 +598,7 @@ fn load_animations_impl(
                         for (time, data) in times.iter().zip(&q) {
                             chan.push(Rotation {
                                 time: *time,
-                                data: *data,
+                                data: quat_swizzle(data), // Z axis up
                             });
                         }
                         r_channels.insert(
@@ -602,7 +615,7 @@ fn load_animations_impl(
                         for (time, data) in times.iter().zip(&v) {
                             chan.push(Translation {
                                 time: *time,
-                                data: *data,
+                                data: vec_swizzle(data), // Z axis up
                             });
                         }
                         t_channels.insert(
@@ -663,9 +676,9 @@ fn load_animations_impl(
 /// # Errors
 /// May return `RhError`
 pub fn load_animations(
-    filename: &Path,
+    path: &Path,
 ) -> Result<(Vec<Skeleton>, Vec<RawAnimation>), RhError> {
-    let (document, buffers) = load_impl(filename)?;
+    let (document, buffers) = load_impl(path)?;
     let skeletons = load_skeleton(&document, &buffers)?;
     let animations = load_animations_impl(&document, &buffers)?;
 

@@ -184,7 +184,7 @@ pub fn animate(
     // Walk the joints to create the output
     for (joint_index, node_index) in skeleton.joint_to_node.iter().enumerate() {
         if let Some(dq) = transforms.get(node_index) {
-            output.0[joint_index] = dualquat::swizzle(dq);
+            output.0[joint_index] = *dq;
         } // else output buffer is already set to default value
     }
 
