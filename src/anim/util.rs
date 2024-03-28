@@ -1,9 +1,6 @@
 use super::{
-    types::{
-        Interpolation, RawAnimation, Rotation, RotationChannel, Skeleton,
-        Translation, TranslationChannel,
-    },
-    JointInfo,
+    types::{Animation, Interpolation, Skeleton},
+    AnimationChannel, JointInfo, Keyframe,
 };
 use crate::{
     dualquat::{self, DualQuat},
@@ -11,22 +8,21 @@ use crate::{
 };
 use ahash::{HashMap, HashMapExt};
 use log::debug;
-use nalgebra_glm as glm;
 
-/// Helper function to calculate the parameter used for interpolation
-fn interpolation_weight(start: f32, end: f32, current: f32) -> f32 {
+/// Helper to calculate the parameter used for interpolation
+fn weight(start: f32, end: f32, current: f32) -> f32 {
     const EPSILON: f32 = 0.0005;
     ((current - start) / (end - start).max(EPSILON)).clamp(0.0f32, 1.0f32)
 }
 
-/// Helper function for determining rotation
-fn rotate(
-    r_channel: &RotationChannel,
-    initial_frame: &Rotation,
+/// Helper to calculate transforms
+fn calculate(
+    channel: &AnimationChannel,
+    initial_frame: &Keyframe,
     current_time: f32,
-) -> glm::Quat {
+) -> DualQuat {
     let mut frame = initial_frame;
-    for f in &r_channel.channel {
+    for f in &channel.data {
         if f.time < current_time {
             // This frame has a time before the current time, so
             // make it the new candidate frame. (Note that `frame`
@@ -35,17 +31,19 @@ fn rotate(
         } else {
             // This frame has a time equal or greater than the
             // desired time, so stop looping.
-            if r_channel.interpolation == Interpolation::Step {
+            if channel.interpolation == Interpolation::Step {
                 // Step interpolation uses the candidate frame
                 return frame.data;
             }
-            // Other interpolation options are linear and cubic
-            // spline. Cubic spline isn't supported so if it wasn't
-            // filtered out already it will be treated as linear.
-            return glm::quat_slerp(
+            // Other interpolation options are linear and cubic spline. Cubic
+            // spline isn't supported so if it wasn't filtered out already it
+            // will be treated as linear.
+            // This currently uses dual quaternion linear blending but may
+            // change to ScLERP when that option is available.
+            return dualquat::dlb(
                 &frame.data,
                 &f.data,
-                interpolation_weight(frame.time, f.time, current_time),
+                weight(frame.time, f.time, current_time),
             );
         }
     }
@@ -54,45 +52,10 @@ fn rotate(
     frame.data
 }
 
-/// Helper function for determining translation
-fn translate(
-    t_channel: &TranslationChannel,
-    initial_frame: &Translation,
-    current_time: f32,
-) -> glm::Vec3 {
-    let mut frame = initial_frame;
-    for f in &t_channel.channel {
-        if f.time < current_time {
-            // This frame has a time before the current time, so
-            // make it the new candidate frame. (Note that `frame`
-            // and `f` are both references.)
-            frame = f;
-        } else {
-            // This frame has a time equal or greater than the
-            // desired time, so stop looping.
-            if t_channel.interpolation == Interpolation::Step {
-                // Step interpolation uses the candidate frame
-                return frame.data;
-            }
-            // Other interpolation options are linear and cubic
-            // spline. Cubic spline isn't supported so if it wasn't
-            // filtered out already it will be treated as linear.
-            return glm::lerp(
-                &frame.data,
-                &f.data,
-                interpolation_weight(frame.time, f.time, current_time),
-            );
-        }
-    }
-    // Fall through past the end of the channel so return data
-    // from candidate frame
-    frame.data
-}
-
-// Returns animation dual quaternion for a given joint at arbitrary timestamp
+/// Calculates transform dual quaternion for given joint at arbitrary timestamp
 fn transform(
     joint_info: &JointInfo,
-    animation: &RawAnimation,
+    animation: &Animation,
     node_index: usize,
     current_time: f32,
 ) -> DualQuat {
@@ -100,34 +63,23 @@ fn transform(
     // its first frame. The binding pose is used for the initial data at time
     // 0. It may be possible to do something more with this in the future to
     // blend from one animation to the next.
-    let initial_r = Rotation {
-        time: 0.0f32,
-        data: joint_info.bind_rotation,
+    let initial_frame = Keyframe {
+        time: 0.0_f32,
+        data: joint_info.bind,
     };
-    let r = animation
-        .r_channels
+    animation
+        .channels
         .get(&node_index)
-        .map_or(initial_r.data, |r_channel| {
-            rotate(r_channel, &initial_r, current_time)
-        });
-    let initial_t = Translation {
-        time: 0.0f32,
-        data: joint_info.bind_translation,
-    };
-    let t = animation
-        .t_channels
-        .get(&node_index)
-        .map_or(initial_t.data, |t_channel| {
-            translate(t_channel, &initial_t, current_time)
-        });
-    DualQuat::new(&r, &t)
+        .map_or(joint_info.bind, |channel| {
+            calculate(channel, &initial_frame, current_time)
+        })
 }
 
 // Call with the root node to recursively calculate node transform
 // including the inverse binding
 fn traverse(
     skeleton: &Skeleton,
-    animation: &RawAnimation,
+    animation: &Animation,
     node_index: usize,
     current_time: f32,
     dq_in: DualQuat,
@@ -165,7 +117,7 @@ fn traverse(
 #[must_use]
 pub fn animate(
     skeleton: &Skeleton,
-    animation: &RawAnimation,
+    animation: &Animation,
     current_time: f32,
 ) -> JointTransforms {
     let mut output = JointTransforms::default();
@@ -198,15 +150,15 @@ mod tests {
     /// This does NOT do interpolation, just checks the weight function
     #[test]
     fn interpolation_weight() {
-        let x = super::interpolation_weight(0.0, 10.0, 7.0);
+        let x = super::weight(0.0, 10.0, 7.0);
         assert!((x - 0.7f32).abs() < EPSILON);
-        let x = super::interpolation_weight(0.0, 10.0, 12.0);
+        let x = super::weight(0.0, 10.0, 12.0);
         assert!((x - 1.0f32).abs() < EPSILON);
-        let x = super::interpolation_weight(0.0, 10.0, -2.0);
+        let x = super::weight(0.0, 10.0, -2.0);
         assert!((x - 0.0f32).abs() < EPSILON);
-        let x = super::interpolation_weight(-2.0, 8.0, 3.0);
+        let x = super::weight(-2.0, 8.0, 3.0);
         assert!((x - 0.5f32).abs() < EPSILON);
-        let x = super::interpolation_weight(1.0, 1.0, 1.0);
+        let x = super::weight(1.0, 1.0, 1.0);
         assert!(x >= 0.0f32 && x <= 1.0f32);
     }
 }

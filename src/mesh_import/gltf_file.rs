@@ -6,8 +6,8 @@ use super::types::{
 };
 use crate::{
     anim::{
-        Interpolation, JointInfo, RawAnimation, Rotation, RotationChannel,
-        Skeleton, Translation, TranslationChannel,
+        Animation, AnimationChannel, Interpolation, JointInfo, Keyframe,
+        Skeleton,
     },
     dualquat::{self, DualQuat},
     rh_error::RhError,
@@ -39,6 +39,37 @@ struct NodeInfo {
     translation: glm::Vec3,
     rotation: glm::Quat,
     scale: glm::Vec3,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Rotation {
+    time: f32,
+    data: glm::Quat,
+}
+
+#[derive(Clone, Debug)]
+struct RotationChannel {
+    interpolation: Interpolation,
+    channel: Vec<Rotation>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Translation {
+    time: f32,
+    data: glm::Vec3,
+}
+
+#[derive(Clone, Debug)]
+struct TranslationChannel {
+    interpolation: Interpolation,
+    channel: Vec<Translation>,
+}
+
+#[derive(Clone, Debug)]
+struct RawAnimation {
+    name: String,
+    r_channels: HashMap<usize, RotationChannel>,
+    t_channels: HashMap<usize, TranslationChannel>,
 }
 
 // Validate a glTF for compatibility. Returns index and vertex count.
@@ -414,8 +445,10 @@ fn joint_info_from_node(node_info: &NodeInfo, inv_bind: DualQuat) -> JointInfo {
         parent: node_info.parent,
         children: node_info.children.clone(),
         inv_bind,
-        bind_translation: vec_swizzle(&node_info.translation), // Z axis up
-        bind_rotation: quat_swizzle(&node_info.rotation),      // Z axis up
+        bind: DualQuat::new(
+            &quat_swizzle(&node_info.rotation),
+            &vec_swizzle(&node_info.translation),
+        ), // Z axis up
     }
 }
 
@@ -552,7 +585,7 @@ fn load_skeleton(
     Ok(ret)
 }
 
-fn load_animations_impl(
+fn load_raw_animations(
     document: &Document,
     buffers: &[Data],
 ) -> Result<Vec<RawAnimation>, RhError> {
@@ -587,8 +620,6 @@ fn load_animations_impl(
                 return Err(RhError::UnsupportedFormat);
             };
 
-            // Currently no swizzling is done here and data stays in
-            // glTF Y axis up until converted to Z up at the end
             if let Some(outputs) = reader.read_outputs() {
                 match outputs {
                     ReadOutputs::Rotations(x) => {
@@ -667,8 +698,182 @@ fn load_animations_impl(
             r_channels,
             t_channels,
         });
-    }
+    } // animation
     Ok(ret)
+}
+
+fn weight(start: f32, end: f32, current: f32) -> f32 {
+    const EPSILON: f32 = 0.0005_f32;
+    ((current - start) / (end - start).max(EPSILON)).clamp(0.0f32, 1.0f32)
+}
+
+/// Helper function for determining rotation
+fn find_rotation(
+    r_channel: &RotationChannel,
+    initial_frame: &Rotation,
+    current_time: f32,
+) -> glm::Quat {
+    let mut frame = initial_frame;
+    for f in &r_channel.channel {
+        if f.time < current_time {
+            // This frame has a time before the current time, so
+            // make it the new candidate frame. (Note that `frame`
+            // and `f` are both references.)
+            frame = f;
+        } else {
+            // This frame has a time equal or greater than the
+            // desired time, so stop looping.
+            if r_channel.interpolation == Interpolation::Step {
+                // Step interpolation uses the candidate frame
+                return frame.data;
+            }
+            // Other interpolation options are linear and cubic
+            // spline. Cubic spline isn't supported so if it wasn't
+            // filtered out already it will be treated as linear.
+            return glm::quat_slerp(
+                &frame.data,
+                &f.data,
+                weight(frame.time, f.time, current_time),
+            );
+        }
+    }
+    // Fall through past the end of the channel so return data
+    // from candidate frame
+    frame.data
+}
+
+/// Helper function for determining translation
+fn find_translation(
+    t_channel: &TranslationChannel,
+    initial_frame: &Translation,
+    current_time: f32,
+) -> glm::Vec3 {
+    let mut frame = initial_frame;
+    for f in &t_channel.channel {
+        if f.time < current_time {
+            // This frame has a time before the current time, so
+            // make it the new candidate frame. (Note that `frame`
+            // and `f` are both references.)
+            frame = f;
+        } else {
+            // This frame has a time equal or greater than the
+            // desired time, so stop looping.
+            if t_channel.interpolation == Interpolation::Step {
+                // Step interpolation uses the candidate frame
+                return frame.data;
+            }
+            // Other interpolation options are linear and cubic
+            // spline. Cubic spline isn't supported so if it wasn't
+            // filtered out already it will be treated as linear.
+            return glm::lerp(
+                &frame.data,
+                &f.data,
+                weight(frame.time, f.time, current_time),
+            );
+        }
+    }
+    // Fall through past the end of the channel so return data
+    // from candidate frame
+    frame.data
+}
+
+fn process_animation_node(
+    raw: &RawAnimation,
+    skeleton: &Skeleton,
+    node_index: usize,
+) -> AnimationChannel {
+    // The animation data has no direct reference to the skeleton but all the
+    // data depends on the skeleton's hiearchy. Just holding the skeleton in
+    // its binding pose requires that pose being in the data. That means it
+    // is unlikely that channels will be missing from the animation data.
+    // But if it is, filling it in with binding data seems like the best
+    // solution. That information is in the skeleton but it is conveniently
+    // accessed by node index.
+    let (initial_rot, initial_trans) = {
+        skeleton.tree.get(&node_index).map_or_else(
+            || {
+                // This shouldn't happen. Even a root that is not a joint is
+                // added to the skeleton. But if it does, use some defaults.
+                warn!("node_index={} not in tree", node_index);
+                (glm::Quat::identity(), glm::Vec3::zeros())
+            },
+            |joint_info| dualquat::decompose(&joint_info.bind),
+        )
+    };
+
+    // Input animation data is keyed by node index
+    let r_channel_opt = raw.r_channels.get(&node_index);
+    let t_channel_opt = raw.t_channels.get(&node_index);
+
+    // The channels may contain different timestamps. Collect all of
+    // those values to make sure each one is processed.
+    // This is also a convenient place to check the interpolation mode. The
+    // output mode will default to `Interpolation::Step` but will be changed to
+    // `Interpolation::Linear` if either channel does not use
+    // `Interpolation::Step`.
+    let mut times = Vec::new();
+    let mut interpolation = Interpolation::Step;
+    if let Some(r_channel) = r_channel_opt {
+        for data in &r_channel.channel {
+            times.push(data.time);
+        }
+        if r_channel.interpolation != Interpolation::Step {
+            interpolation = Interpolation::Linear;
+        }
+    }
+    if let Some(t_channel) = t_channel_opt {
+        for data in &t_channel.channel {
+            times.push(data.time);
+        }
+        if t_channel.interpolation != Interpolation::Step {
+            interpolation = Interpolation::Linear;
+        }
+    }
+    // Since the timestamps are f32, regular `sort` can't be used. If there are
+    // NaNs consider them equal (but expect trouble somewhere else).
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // The regular `dedup` is implemented for f32 but doing an approximate
+    // equals is probably a better idea. It seems unlikely that animation will
+    // need keyframes that are actually less than 1 mS apart.
+    times.dedup_by(|a, b| (*a - *b).abs() < 0.001_f32);
+
+    let mut keyframes = Vec::new();
+    for current_time in times {
+        let rot = {
+            r_channel_opt.map_or(initial_rot, |r_channel| {
+                find_rotation(
+                    r_channel,
+                    &Rotation {
+                        time: 0.0_f32,
+                        data: initial_rot,
+                    },
+                    current_time,
+                )
+            })
+        };
+        let trans = {
+            t_channel_opt.map_or(initial_trans, |t_channel| {
+                find_translation(
+                    t_channel,
+                    &Translation {
+                        time: 0.0_f32,
+                        data: initial_trans,
+                    },
+                    current_time,
+                )
+            })
+        };
+        let dq = DualQuat::new(&rot, &trans);
+        keyframes.push(Keyframe {
+            time: current_time,
+            data: dq,
+        });
+    } // times
+
+    AnimationChannel {
+        interpolation,
+        data: keyframes,
+    }
 }
 
 /// Loads skeleton and animation from a glTF file
@@ -677,12 +882,48 @@ fn load_animations_impl(
 /// May return `RhError`
 pub fn load_animations(
     path: &Path,
-) -> Result<(Vec<Skeleton>, Vec<RawAnimation>), RhError> {
+) -> Result<(Vec<Skeleton>, Vec<Animation>), RhError> {
     let (document, buffers) = load_impl(path)?;
     let skeletons = load_skeleton(&document, &buffers)?;
-    let animations = load_animations_impl(&document, &buffers)?;
+    let raw_animations = load_raw_animations(&document, &buffers)?;
 
     debug!("skeletons={:?}", skeletons);
+    //debug!("animations={:?}", animations);
+
+    let mut animations = Vec::new();
+    for raw in &raw_animations {
+        // The raw animation has two hashmaps, one with rotation channels and
+        // one with translation channels. They are both keyed by node index
+        // (which is not the joint index). They probably both have entries for
+        // all the same nodes, but that should not be relied on.
+
+        // Collect all the keys for both maps into a non-duplicated vector.
+        let mut nodes: Vec<usize> = raw
+            .r_channels
+            .keys()
+            .chain(raw.t_channels.keys())
+            .copied()
+            .collect();
+        nodes.sort_unstable(); // Fast and safe for sorting `Vec<usize>`
+        nodes.dedup();
+
+        // How to tie this animation to the skeleton? FIXME
+        let skeleton = &skeletons[0];
+
+        // Process every node present in this animation
+        let mut channels: HashMap<usize, AnimationChannel> = HashMap::new();
+        for node_index in nodes {
+            channels.insert(
+                node_index,
+                process_animation_node(raw, skeleton, node_index),
+            );
+        }
+
+        animations.push(Animation {
+            name: raw.name.clone(),
+            channels,
+        });
+    }
     debug!("animations={:?}", animations);
 
     Ok((skeletons, animations))

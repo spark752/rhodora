@@ -1,6 +1,5 @@
 use crate::dualquat::DualQuat;
 use ahash::HashMap;
-use nalgebra_glm as glm;
 
 #[derive(Clone, Debug)]
 pub struct JointInfo {
@@ -8,8 +7,7 @@ pub struct JointInfo {
     pub parent: usize,
     pub children: Vec<usize>,
     pub inv_bind: DualQuat,
-    pub bind_translation: glm::Vec3,
-    pub bind_rotation: glm::Quat,
+    pub bind: DualQuat,
 }
 
 #[derive(Clone, Debug)]
@@ -28,32 +26,19 @@ pub enum Interpolation {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Rotation {
+pub struct Keyframe {
     pub time: f32,
-    pub data: glm::Quat,
+    pub data: DualQuat,
 }
 
 #[derive(Clone, Debug)]
-pub struct RotationChannel {
+pub struct AnimationChannel {
     pub interpolation: Interpolation,
-    pub channel: Vec<Rotation>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Translation {
-    pub time: f32,
-    pub data: glm::Vec3,
+    pub data: Vec<Keyframe>,
 }
 
 #[derive(Clone, Debug)]
-pub struct TranslationChannel {
-    pub interpolation: Interpolation,
-    pub channel: Vec<Translation>,
-}
-
-#[derive(Debug)]
-pub struct RawAnimation {
+pub struct Animation {
     pub name: String,
-    pub r_channels: HashMap<usize, RotationChannel>,
-    pub t_channels: HashMap<usize, TranslationChannel>,
+    pub channels: HashMap<usize, AnimationChannel>,
 }
