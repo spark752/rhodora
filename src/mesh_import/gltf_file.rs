@@ -5,7 +5,7 @@ use super::types::{
     ImportMaterial, ImportOptions, ImportVertex, MeshLoaded, Submesh,
 };
 use crate::{
-    anim::{
+    animation::{
         Animation, AnimationChannel, Interpolation, JointInfo, Keyframe,
         Skeleton,
     },
@@ -777,11 +777,12 @@ fn find_translation(
     frame.data
 }
 
+// Returns the animation channel and the maximum timestamp in that channel
 fn process_animation_node(
     raw: &RawAnimation,
     skeleton: &Skeleton,
     node_index: usize,
-) -> AnimationChannel {
+) -> (AnimationChannel, f32) {
     // The animation data has no direct reference to the skeleton but all the
     // data depends on the skeleton's hiearchy. Just holding the skeleton in
     // its binding pose requires that pose being in the data. That means it
@@ -836,6 +837,7 @@ fn process_animation_node(
     // equals is probably a better idea. It seems unlikely that animation will
     // need keyframes that are actually less than 1 mS apart.
     times.dedup_by(|a, b| (*a - *b).abs() < 0.001_f32);
+    let max_time = *(times.last().unwrap_or(&0.0_f32));
 
     let mut keyframes = Vec::new();
     for current_time in times {
@@ -870,10 +872,13 @@ fn process_animation_node(
         });
     } // times
 
-    AnimationChannel {
-        interpolation,
-        data: keyframes,
-    }
+    (
+        AnimationChannel {
+            interpolation,
+            data: keyframes,
+        },
+        max_time,
+    )
 }
 
 /// Loads skeleton and animation from a glTF file
@@ -912,15 +917,17 @@ pub fn load_animations(
 
         // Process every node present in this animation
         let mut channels: HashMap<usize, AnimationChannel> = HashMap::new();
+        let mut max_time = 0.0_f32;
         for node_index in nodes {
-            channels.insert(
-                node_index,
-                process_animation_node(raw, skeleton, node_index),
-            );
+            let (channel, max_channel_time) =
+                process_animation_node(raw, skeleton, node_index);
+            max_time = max_time.max(max_channel_time);
+            channels.insert(node_index, channel);
         }
 
         animations.push(Animation {
             name: raw.name.clone(),
+            max_time,
             channels,
         });
     }

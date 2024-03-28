@@ -50,7 +50,7 @@ pub fn main() {
     // from the project root.
     boss.load_mesh(
         &mut cbb,
-        Path::new("./examples/cube.obj"),
+        Path::new("./examples/assets/cube.obj"),
         &ImportOptions::default(),
     )
     .unwrap();

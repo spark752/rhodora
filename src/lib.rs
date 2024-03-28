@@ -1,4 +1,4 @@
-pub mod anim;
+pub mod animation;
 pub mod boss;
 pub mod camera;
 pub mod dualquat;

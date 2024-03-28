@@ -40,5 +40,6 @@ pub struct AnimationChannel {
 #[derive(Clone, Debug)]
 pub struct Animation {
     pub name: String,
+    pub max_time: f32,
     pub channels: HashMap<usize, AnimationChannel>,
 }
