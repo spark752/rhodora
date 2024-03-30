@@ -92,6 +92,12 @@ fn traverse(
     current_time: f32,
 ) {
     let Some(joint_info) = skeleton.tree.get(&node_index) else {
+        // The root node is probably not a joint but gets added to the skeleton
+        // so that its children are known. The children may include joints as
+        // well as submeshes, etc. Only the joints should be listed, so this
+        // function should only be called with a `node_index` that is a joint
+        // or the root. If others end up in the data then the code ends up
+        // here.
         debug!("node_index={} not in tree", node_index);
         return;
     };

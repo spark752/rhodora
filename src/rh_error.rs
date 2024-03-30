@@ -65,6 +65,7 @@ pub enum RhError {
     VkHostAccessError(HostAccessError),
     VkIntoPipelineLayoutCreateInfoError(IntoPipelineLayoutCreateInfoError),
     GltfError(Box<gltf::Error>),
+    ImportError(crate::mesh_import::ImportError),
 }
 
 impl error::Error for RhError {}
@@ -147,6 +148,7 @@ impl fmt::Display for RhError {
             Self::GltfError(e) => {
                 write!(f, "gltf Error: {e}")
             }
+            Self::ImportError(e) => write!(f, "import error: {e}"),
         }
     }
 }
@@ -226,5 +228,11 @@ impl From<IntoPipelineLayoutCreateInfoError> for RhError {
 impl From<OsError> for RhError {
     fn from(e: OsError) -> Self {
         Self::WinitOsError(e)
+    }
+}
+
+impl From<crate::mesh_import::ImportError> for RhError {
+    fn from(e: crate::mesh_import::ImportError) -> Self {
+        Self::ImportError(e)
     }
 }

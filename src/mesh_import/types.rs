@@ -74,3 +74,81 @@ pub struct ImportVertex {
     pub joint_ids: [u8; 4],
     pub weights: [f32; 4],
 }
+
+/// Errors specific to importing data. `RhError` has a `From` trait to
+/// handle these.
+#[derive(Debug)]
+pub enum ImportError {
+    General,
+    NoTriangles,
+    NoIndices,
+    NoPositions,
+    NoNormals,
+    NoWeights,
+    CountMismatch,
+    SparseMesh,
+    BigJointIndices,
+    NoInverseBind,
+    ScaledJoints(usize),
+    SparseAnimation,
+    NoSampler,
+    Morphing,
+    NoNodeInfo(usize),
+    NoRootNode(usize),
+    ConflictingRootNodes(usize),
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::General => write!(f, "general import error"),
+            Self::NoTriangles => {
+                write!(f, "only triangulated meshes are supported")
+            }
+            Self::NoIndices => {
+                write!(f, "only indexed meshes are supported")
+            }
+            Self::NoPositions => {
+                write!(f, "vertex positions are required")
+            }
+            Self::NoNormals => {
+                write!(f, "vertex normals are required")
+            }
+            Self::NoWeights => {
+                write!(f, "vertex weights are required for a skinned mesh")
+            }
+            Self::CountMismatch => {
+                write!(f, "there is a mismatch in the count of vertices")
+            }
+            Self::SparseMesh => {
+                write!(f, "sparse mesh data is not supported")
+            }
+            Self::BigJointIndices => {
+                write!(f, "joint indices must be 8 bits for a skinned mesh")
+            }
+            Self::NoInverseBind => {
+                write!(
+                    f,
+                    "inverse bind matrices are required for a skinned mesh"
+                )
+            }
+            Self::ScaledJoints(a) => {
+                write!(f, "node {a} is an unsupported scaled joint")
+            }
+            Self::SparseAnimation => {
+                write!(f, "sparse animation data is not supported")
+            }
+            Self::NoSampler => {
+                write!(f, "a sampler is required for animation")
+            }
+            Self::Morphing => {
+                write!(f, "morphing animation is not supported")
+            }
+            Self::NoNodeInfo(a) => write!(f, "node {a} has missing info"),
+            Self::NoRootNode(a) => write!(f, "skin {a} has no root node"),
+            Self::ConflictingRootNodes(a) => {
+                write!(f, "skin {a} has conflicting root nodes")
+            }
+        }
+    }
+}

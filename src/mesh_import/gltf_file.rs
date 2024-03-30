@@ -10,12 +10,12 @@ use crate::{
         Skeleton,
     },
     dualquat::{self, DualQuat},
+    mesh_import::ImportError,
     rh_error::RhError,
     vertex::{IndexBuffer, InterBuffer},
 };
 use ahash::{HashMap, HashMapExt};
 use gltf::{
-    accessor::Dimensions,
     animation::util::ReadOutputs,
     buffer::{self, Data},
     image::Source,
@@ -76,55 +76,26 @@ struct RawAnimation {
 fn validate(p: &Primitive) -> Result<(usize, usize), RhError> {
     // Mesh must be made of indexed triangles
     if p.mode() != Mode::Triangles {
-        error!("Not a triangle mesh");
-        return Err(RhError::UnsupportedFormat);
+        Err(ImportError::NoTriangles)?;
     }
-    let indices = (p.indices().ok_or(RhError::UnsupportedFormat))?;
+    let indices = (p.indices().ok_or(ImportError::NoIndices))?;
     let idx_count = indices.count();
 
     // Positions are required
-    let positions = (p
-        .get(&Semantic::Positions)
-        .ok_or(RhError::UnsupportedFormat))?;
+    let positions =
+        (p.get(&Semantic::Positions).ok_or(ImportError::NoPositions))?;
     let vert_count = positions.count();
 
     // Normals are required. There must be the same number of normals as
     // there are positions.
-    let normals =
-        (p.get(&Semantic::Normals).ok_or(RhError::UnsupportedFormat))?;
+    let normals = (p.get(&Semantic::Normals).ok_or(ImportError::NoNormals))?;
     if normals.count() != vert_count {
-        return Err(RhError::UnsupportedFormat);
+        Err(ImportError::NoIndices)?;
     }
 
-    // Texture coordinate (UVs) are optional, but if they are provided they
-    // must be in Vec2 and the same number as there are positions
+    // Check optional features just for info
     let uv_option = p.get(&Semantic::TexCoords(0));
-    {
-        if let Some(ref uv) = uv_option {
-            if uv.count() != vert_count || uv.dimensions() != Dimensions::Vec2 {
-                return Err(RhError::UnsupportedFormat);
-            }
-        }
-    }
-
-    // Joint data is optional, but if it is provided there must be both indices
-    // and weights and the same number as there are positions
     let joint_option = p.get(&Semantic::Joints(0));
-    {
-        if let Some(ref joints) = joint_option {
-            if joints.count() != vert_count {
-                return Err(RhError::UnsupportedFormat);
-            }
-        }
-        let weight_option = p.get(&Semantic::Weights(0));
-        if let Some(weights) = weight_option {
-            if weights.count() != vert_count {
-                return Err(RhError::UnsupportedFormat);
-            }
-        } else {
-            return Err(RhError::UnsupportedFormat);
-        }
-    }
 
     // A little info
     info!(
@@ -211,7 +182,7 @@ pub fn load(
             // output buffer. There is a `into_u32` provided but not one for
             // 16 bits.
             let idx_data =
-                reader.read_indices().ok_or(RhError::UnsupportedFormat)?;
+                reader.read_indices().ok_or(ImportError::NoIndices)?;
             match idx_data {
                 ReadIndices::U8(it) => {
                     for i in it {
@@ -240,10 +211,9 @@ pub fn load(
             // Read and store positions into the import vertex buffer, scaling
             // if needed
             let pos_data =
-                reader.read_positions().ok_or(RhError::UnsupportedFormat)?;
+                reader.read_positions().ok_or(ImportError::NoPositions)?;
             let ReadPositions::Standard(it) = pos_data else {
-                warn!("Unsupported sparse position format");
-                return Err(RhError::UnsupportedFormat);
+                return Err(ImportError::SparseMesh)?;
             };
             for i in it {
                 let v = ImportVertex {
@@ -255,10 +225,9 @@ pub fn load(
 
             // Read and store normals into the import vertex buffer
             let norm_data =
-                reader.read_normals().ok_or(RhError::UnsupportedFormat)?;
+                reader.read_normals().ok_or(ImportError::NoNormals)?;
             let ReadNormals::Standard(it) = norm_data else {
-                warn!("Unsupported sparse normal format");
-                return Err(RhError::UnsupportedFormat);
+                return Err(ImportError::SparseMesh)?;
             };
             for (i, norm) in it.enumerate() {
                 if i < verts.len() {
@@ -280,12 +249,11 @@ pub fn load(
                 let ReadJoints::U8(joint_it) = joint_data else {
                     // We could try fitting these into u8 but if that wasn't
                     // used by the file it probably means they won't fit
-                    warn!("Unsupported joint format");
-                    return Err(RhError::UnsupportedFormat);
+                    return Err(ImportError::BigJointIndices)?;
                 };
                 let weight_data = reader
                     .read_weights(0)
-                    .ok_or(RhError::UnsupportedFormat)?
+                    .ok_or(ImportError::NoWeights)?
                     .into_f32();
                 for (i, (id_array, weights)) in
                     joint_it.zip(weight_data).enumerate()
@@ -305,7 +273,7 @@ pub fn load(
                     vert_count,
                     verts.len()
                 );
-                return Err(RhError::UnsupportedFormat);
+                Err(ImportError::CountMismatch)?;
             }
 
             // Push the import vertex data into the output buffer
@@ -472,8 +440,7 @@ fn load_skeleton(
     for skin in document.skins() {
         let reader = skin.reader(|x| Some(&buffers[x.index()]));
         let Some(iter) = reader.read_inverse_bind_matrices() else {
-            error!("Missing inverse bind matrices");
-            return Err(RhError::UnsupportedFormat);
+            return Err(ImportError::NoInverseBind)?;
         };
 
         let mut current_root: Option<usize> = None;
@@ -484,18 +451,13 @@ fn load_skeleton(
             let node_index = node.index();
             joint_to_node.push(node_index);
             let Some(node_info) = full_tree.get(&node_index) else {
-                error!(
-                    "skin {} has no node info for node index {}",
-                    skin.index(),
-                    node_index,
-                );
-                return Err(RhError::UnsupportedFormat);
+                return Err(ImportError::NoNodeInfo(node_index))?;
             };
 
             // All of the root nodes for this skin should be the same
             if let Some(x) = current_root {
                 if x != node_info.root {
-                    warn!("skin {} has multiple root nodes", skin.index());
+                    Err(ImportError::ConflictingRootNodes(skin.index()))?;
                 }
             }
             current_root = Some(node_info.root);
@@ -507,12 +469,7 @@ fn load_skeleton(
                 SCALE_EPSILON,
             );
             if compare.x || compare.y || compare.z {
-                error!(
-                    "skin {}, node index {}, has unsupported scale",
-                    skin.index(),
-                    node_index
-                );
-                return Err(RhError::UnsupportedFormat);
+                Err(ImportError::ScaledJoints(node_index))?;
             }
 
             // Insert into the joint info hashmap
@@ -525,10 +482,9 @@ fn load_skeleton(
             );
         }
 
-        // Make sure we found root node
+        // Make sure that a root node was found
         let Some(root_index) = current_root else {
-            error!("No root node found for skin {}", skin.index());
-            return Err(RhError::UnsupportedFormat);
+            return Err(ImportError::NoRootNode(skin.index()))?;
         };
 
         // Make sure that root node matches what gltf crate says.
@@ -536,8 +492,7 @@ fn load_skeleton(
         // case is always triggered by test files so more research is needed.
         if let Some(alt_root) = skin.skeleton() {
             if root_index != alt_root.index() {
-                error!("Conflicting root nodes for skin {}", skin.index());
-                return Err(RhError::UnsupportedFormat);
+                Err(ImportError::ConflictingRootNodes(skin.index()))?;
             }
         } else {
             warn!(
@@ -565,8 +520,7 @@ fn load_skeleton(
                     joint_info_from_node(node_info, DualQuat::default()),
                 );
             } else {
-                error!("No root node found for skin {}", skin.index());
-                return Err(RhError::UnsupportedFormat);
+                Err(ImportError::NoRootNode(skin.index()))?;
             }
         }
 
@@ -611,13 +565,12 @@ fn load_raw_animations(
                 match inputs {
                     Iter::Standard(times) => times.collect(),
                     Iter::Sparse(_) => {
-                        error!("Unsupported sparse animation format");
-                        return Err(RhError::UnsupportedFormat);
+                        return Err(ImportError::SparseAnimation)?;
                     }
                 }
             } else {
                 error!("Animation does not contain a sampler");
-                return Err(RhError::UnsupportedFormat);
+                return Err(ImportError::NoSampler)?;
             };
 
             if let Some(outputs) = reader.read_outputs() {
@@ -678,13 +631,11 @@ fn load_raw_animations(
                         }
                     }
                     ReadOutputs::MorphTargetWeights(_) => {
-                        error!("Morphing not supported");
-                        return Err(RhError::UnsupportedFormat);
+                        Err(ImportError::Morphing)?;
                     }
                 }
             } else {
-                error!("Animation does not contain a sampler output");
-                return Err(RhError::UnsupportedFormat);
+                Err(ImportError::NoSampler)?;
             };
         }
 
