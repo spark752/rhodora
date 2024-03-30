@@ -1,6 +1,6 @@
 use super::{
     types::{Animation, Interpolation, Skeleton},
-    AnimationChannel, JointInfo, Keyframe,
+    JointInfo, Keyframe,
 };
 use crate::dualquat::{self, DualQuat};
 use ahash::{HashMap, HashMapExt};
@@ -12,14 +12,18 @@ fn weight(start: f32, end: f32, current: f32) -> f32 {
     ((current - start) / (end - start).max(EPSILON)).clamp(0.0f32, 1.0f32)
 }
 
-/// Helper to calculate transforms
+/// Helper to calculate transforms. The `initial_frame` is only used in
+/// calculations when the `current_time` is less than the first timestamp
+/// in the `channel`. The `channel` is separate from `interpolation` so it
+/// can be a slice which doesm't depend on any higher level structure.
 fn calculate(
-    channel: &AnimationChannel,
+    channel: &[Keyframe],
     initial_frame: &Keyframe,
+    interpolation: Interpolation,
     current_time: f32,
 ) -> DualQuat {
     let mut frame = initial_frame;
-    for f in &channel.data {
+    for f in channel {
         if f.time < current_time {
             // This frame has a time before the current time, so
             // make it the new candidate frame. (Note that `frame`
@@ -28,7 +32,7 @@ fn calculate(
         } else {
             // This frame has a time equal or greater than the
             // desired time, so stop looping.
-            if channel.interpolation == Interpolation::Step {
+            if interpolation == Interpolation::Step {
                 // Step interpolation uses the candidate frame
                 return frame.data;
             }
@@ -68,7 +72,12 @@ fn transform(
         .channels
         .get(&node_index)
         .map_or(joint_info.bind, |channel| {
-            calculate(channel, &initial_frame, current_time)
+            calculate(
+                &channel.data,
+                &initial_frame,
+                channel.interpolation,
+                current_time,
+            )
         })
 }
 
@@ -202,14 +211,25 @@ mod tests {
 
     #[test]
     fn calculate() {
-        let (_node_index, _joint_info, channel, _animation) = granary();
-
         let keyframe = Keyframe {
             time: 0.0_f32,
             data: DualQuat::default(),
         };
+        let channel = vec![Keyframe {
+            time: 1.0_f32,
+            data: DualQuat::new(
+                &glm::Quat::identity(),
+                &glm::vec3(10.0_f32, 4.0_f32, 0.0_f32),
+            ),
+        }];
+
         let current_time = 0.4_f32;
-        let res = super::calculate(&channel, &keyframe, current_time);
+        let res = super::calculate(
+            &channel,
+            &keyframe,
+            Interpolation::Linear,
+            current_time,
+        );
 
         let (_, res_t) = dualquat::decompose(&res);
         let c = glm::equal_eps(
