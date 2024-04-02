@@ -27,6 +27,9 @@ use log::{debug, error, info, trace, warn};
 use nalgebra_glm as glm;
 use std::{fs, io, path::Path};
 
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+
 /// Comparison value for approximate equality of two scale vectors
 const SCALE_EPSILON: f32 = 0.005;
 
@@ -276,7 +279,8 @@ pub fn load(
                 Err(ImportError::CountMismatch)?;
             }
 
-            // Push the import vertex data into the output buffer
+            // Push the import vertex data into the output buffer, converting
+            // the vertex format
             for v in verts {
                 vb_inter.push(v);
             }
@@ -314,11 +318,14 @@ fn load_materials(
     base_path: &Path,
     document: &Document,
 ) -> Vec<ImportMaterial> {
-    // Materials are currently handled separately because that's how the .obj
-    // library works. It could be improved if we focus on glTF.
     info!("Materials={}", document.materials().count());
-    let mut materials = Vec::new();
-    for m in document.materials() {
+
+    // Data is collected but textures are not loaded here. There is not much
+    // computation and probably a small number of textures so it is likely
+    // not worth parallelizing this. While it could be done with rayon's
+    // `par_bridge`, the main issue is that code is currently relying on the
+    // order of the returned vector which would not be the same.
+    document.materials().map(|m| {
         let pbr = m.pbr_metallic_roughness();
         let diffuse = {
             let base = pbr.base_color_factor();
@@ -347,15 +354,13 @@ fn load_materials(
             metalness,
         );
 
-        let material = ImportMaterial {
+        ImportMaterial {
             colour_filename,
             diffuse,
             roughness,
             metalness,
-        };
-        materials.push(material);
-    }
-    materials
+        }
+    }).collect()
 }
 
 /// Recursive node tree traversal
@@ -767,6 +772,14 @@ fn process_animation_node(
             |joint_info| dualquat::decompose(&joint_info.bind),
         )
     };
+    let initial_rot_frame = Rotation {
+        time: 0.0_f32,
+        data: initial_rot,
+    };
+    let initial_trans_frame = Translation {
+        time: 0.0_f32,
+        data: initial_trans,
+    };
 
     // Input animation data is keyed by node index
     let r_channel_opt = raw.r_channels.get(&node_index);
@@ -805,38 +818,36 @@ fn process_animation_node(
     times.dedup_by(|a, b| (*a - *b).abs() < 0.001_f32);
     let max_time = *(times.last().unwrap_or(&0.0_f32));
 
-    let mut keyframes = Vec::new();
-    for current_time in times {
-        let rot = {
-            r_channel_opt.map_or(initial_rot, |r_channel| {
-                find_rotation(
-                    r_channel,
-                    &Rotation {
-                        time: 0.0_f32,
-                        data: initial_rot,
-                    },
-                    current_time,
-                )
-            })
-        };
-        let trans = {
-            t_channel_opt.map_or(initial_trans, |t_channel| {
-                find_translation(
-                    t_channel,
-                    &Translation {
-                        time: 0.0_f32,
-                        data: initial_trans,
-                    },
-                    current_time,
-                )
-            })
-        };
-        let dq = DualQuat::new(&rot, &trans);
-        keyframes.push(Keyframe {
-            time: current_time,
-            data: dq,
-        });
-    } // times
+    // Collect the data into dual quaternions. If the rotations and translations
+    // have different timestamps values will be interpolated.
+    // Processing may be done in parallel using rayon's threadpool.
+    #[cfg(feature = "rayon")]
+    let it = times.par_iter();
+    #[cfg(not(feature = "rayon"))]
+    let it = times.iter();
+
+    let keyframes = it
+        .map(|current_time| {
+            let rot = {
+                r_channel_opt.map_or(initial_rot, |r_channel| {
+                    find_rotation(r_channel, &initial_rot_frame, *current_time)
+                })
+            };
+            let trans = {
+                t_channel_opt.map_or(initial_trans, |t_channel| {
+                    find_translation(
+                        t_channel,
+                        &initial_trans_frame,
+                        *current_time,
+                    )
+                })
+            };
+            Keyframe {
+                time: *current_time,
+                data: DualQuat::new(&rot, &trans),
+            }
+        })
+        .collect();
 
     (
         AnimationChannel {
@@ -884,6 +895,10 @@ pub fn load_animations(
         // Process every node present in this animation
         let mut channels: HashMap<usize, AnimationChannel> = HashMap::new();
         let mut max_time = 0.0_f32;
+
+        // This loop is not parallelized across nodes because of the mutability
+        // of `max_time` and `channels` but `process_animation_node` does
+        // parallelize the node processing.
         for node_index in nodes {
             let (channel, max_channel_time) =
                 process_animation_node(raw, skeleton, node_index);
