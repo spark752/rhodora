@@ -22,14 +22,71 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 const VSYNC: bool = false;
 const FILENAME: &str = "./examples/assets/slenderman.gltf";
+
 const SIM_RATE: f32 = 1.0 / 30.0;
+
+const CAMERA_Y: f32 = -8.0;
 const MIN_FOCAL_LEN: f32 = 35.0;
 const MAX_FOCAL_LEN: f32 = 3000.0;
 const DEFAULT_FOCAL_LEN: f32 = 50.0;
 const MIN_TARGET_Z: f32 = 0.0;
 const MAX_TARGET_Z: f32 = 5.0;
+const DEFAULT_TARGET_Z: f32 = 1.5;
 const ZOOM_RATE: f32 = 1.2 * SIM_RATE;
 const TILT_RATE: f32 = 1.0 * SIM_RATE;
+const ORBIT_RATE: f32 = 1.2 * SIM_RATE;
+
+struct CameraManager {
+    focal_length: f32,
+    orbit_angle: f32,
+    target_z: f32,
+    update_needed: bool,
+}
+
+impl CameraManager {
+    fn zoom(&mut self, rate: f32) {
+        self.focal_length = (self.focal_length.log2() + rate)
+            .exp2()
+            .clamp(MIN_FOCAL_LEN, MAX_FOCAL_LEN);
+        self.update_needed = true;
+    }
+
+    fn tilt(&mut self, rate: f32) {
+        self.target_z =
+            (self.target_z + rate).clamp(MIN_TARGET_Z, MAX_TARGET_Z);
+        self.update_needed = true;
+    }
+
+    fn orbit(&mut self, rate: f32) {
+        self.orbit_angle =
+            (self.orbit_angle - rate) % (2.0_f32 * std::f32::consts::PI);
+        self.update_needed = true;
+    }
+
+    fn update(&mut self, camera: &mut Camera) {
+        if self.update_needed {
+            camera.position(&glm::rotate_vec3(
+                &glm::vec3(0.0_f32, CAMERA_Y, 0.0_f32),
+                self.orbit_angle,
+                &glm::vec3(0.0_f32, 0.0_f32, 1.0_f32),
+            ));
+            camera.zoom(util::focal_length_to_fovy(self.focal_length));
+            camera.target(&glm::vec3(0.0, 0.0, self.target_z));
+            self.update_needed = false;
+        }
+    }
+}
+
+impl Default for CameraManager {
+    fn default() -> Self {
+        Self {
+            focal_length: DEFAULT_FOCAL_LEN,
+            orbit_angle: 0.0_f32,
+            target_z: DEFAULT_TARGET_Z,
+            update_needed: true,
+        }
+    }
+}
 
 fn main() {
     env_logger::init();
@@ -55,16 +112,13 @@ fn main() {
     )
     .unwrap();
 
-    // Create a default camera
-    let mut focal_length: f32 = DEFAULT_FOCAL_LEN;
-    let mut target_z: f32 = 1.5;
-    let mut update_camera: bool = false;
+    // Create a camera
     let mut camera = Camera::new(camera::Properties {
         aspect_ratio: WIDTH as f32 / HEIGHT as f32,
-        fovy: util::focal_length_to_fovy(focal_length),
-        position: glm::vec3(0.0, -8.0, target_z),
-        target: glm::vec3(0.0, 0.0, target_z),
+        ..Default::default()
     });
+    let mut camera_manager = CameraManager::default();
+    camera_manager.update(&mut camera);
 
     // Get a command buffer used for transfering data to the GPU
     let mut cbb = boss.create_primary_cbb().unwrap();
@@ -116,30 +170,25 @@ fn main() {
                 return;
             }
             if keyboard.is_pressed(VirtualKeyCode::Z) {
-                focal_length = (focal_length.log2() + ZOOM_RATE).exp2();
-                update_camera = true;
+                camera_manager.zoom(ZOOM_RATE);
             }
             if keyboard.is_pressed(VirtualKeyCode::X) {
-                focal_length = (focal_length.log2() - ZOOM_RATE).exp2();
-                update_camera = true;
+                camera_manager.zoom(-ZOOM_RATE);
             }
             if keyboard.is_pressed(VirtualKeyCode::W) {
-                target_z += TILT_RATE;
-                update_camera = true;
+                camera_manager.tilt(TILT_RATE);
             }
             if keyboard.is_pressed(VirtualKeyCode::S) {
-                target_z -= TILT_RATE;
-                update_camera = true;
+                camera_manager.tilt(-TILT_RATE);
+            }
+            if keyboard.is_pressed(VirtualKeyCode::A) {
+                camera_manager.orbit(ORBIT_RATE);
+            }
+            if keyboard.is_pressed(VirtualKeyCode::D) {
+                camera_manager.orbit(-ORBIT_RATE);
             }
             keyboard.tick();
-
-            if update_camera {
-                focal_length = focal_length.clamp(MIN_FOCAL_LEN, MAX_FOCAL_LEN);
-                camera.zoom(util::focal_length_to_fovy(focal_length));
-                target_z = target_z.clamp(MIN_TARGET_Z, MAX_TARGET_Z);
-                camera.target(&glm::vec3(0.0, 0.0, target_z));
-                update_camera = false;
-            }
+            camera_manager.update(&mut camera);
 
             // Finish this tick and do another if necessary
             do_tick = boss.finish_tick(false);
@@ -159,18 +208,20 @@ fn main() {
             }
 
             // Animation stuff
-            if let Some(elapsed) = boss.elapsed() {
-                let time = elapsed.as_secs_f32();
-                let modu = time % (animations[0].max_time + 0.2_f32);
+            if !skeletons.is_empty() && !animations.is_empty() {
+                if let Some(elapsed) = boss.elapsed() {
+                    let time = elapsed.as_secs_f32();
+                    let modu = time % (animations[0].max_time + 0.2_f32);
 
-                let mut bone_stuff = JointTransforms::default();
-                rhodora::animation::animate(
-                    &skeletons[0],
-                    &animations[0],
-                    &mut bone_stuff.0,
-                    modu,
-                );
-                boss.model_manager.update_joints(0, bone_stuff);
+                    let mut bone_stuff = JointTransforms::default();
+                    rhodora::animation::animate(
+                        &skeletons[0],
+                        &animations[0],
+                        &mut bone_stuff.0,
+                        modu,
+                    );
+                    boss.model_manager.update_joints(0, bone_stuff);
+                }
             }
 
             // Do the actual rendering. The `None` parameter indicates that
