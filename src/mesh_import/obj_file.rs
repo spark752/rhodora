@@ -3,9 +3,10 @@ use std::path::Path;
 use super::types::{
     ImportMaterial, ImportOptions, ImportVertex, MeshLoaded, Submesh,
 };
+use crate::mesh_import::ImportError;
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
-use log::{error, info};
+use log::info;
 
 /// Load a Wavefront OBJ format object from an .obj file. Loads the file into
 /// memory and calls `process_obj`. You may call that directly if you've loaded
@@ -41,16 +42,15 @@ pub fn process_obj(
     let swizzle = import_options.swizzle;
 
     let mut submeshes = Vec::new();
-    let mut first_index = 0u32;
-    let mut vertex_offset = 0i32;
+    let mut first_index = 0_u32;
+    let mut vertex_offset = 0_i32;
 
     // Models aka submeshes
     // Load each mesh sequentially into the vertex buffer
     for m in &tobj_models {
         let mesh = &m.mesh;
         if mesh.positions.len() != mesh.normals.len() {
-            error!("Submesh has no normals");
-            return Err(RhError::UnsupportedFormat);
+            Err(ImportError::NoNormals)?;
         }
         let pos_count = mesh.positions.len() / 3;
         let idx_count = mesh.indices.len();
@@ -61,8 +61,8 @@ pub fn process_obj(
             idx_count / 3
         );
 
-        // Convert normals to Z axis up if needed and interleave. This file
-        // format does not support skinning.
+        // Convert normals to Z axis and and interleave. This file format does
+        // not support skinning.
         for v in 0..pos_count {
             let bf = ImportVertex {
                 position: if swizzle {
@@ -101,7 +101,8 @@ pub fn process_obj(
             vb_inter.push(bf);
         }
 
-        // Convert to 16 bit indices
+        // Convert to 16 bit indices. Iter/map is complicated by the question
+        // mark operator on the `map_err` so just use ranged loop.
         for i in 0..idx_count {
             vb_index.push_index(
                 u16::try_from(mesh.indices[i])
