@@ -510,16 +510,31 @@ fn load_skeleton(
                     root_index,
                     skin.index()
                 );
+
+                // The root node may have children that are not joints
+                // (submeshes etc.) that should not be in the skeleton.
+                let mut joint_info =
+                    joint_info_from_node(node_info, DualQuat::default());
+                let mut child_joints = Vec::new();
+                for child in joint_info.children {
+                    if joint_tree.contains_key(&child) {
+                        child_joints.push(child);
+                    }
+                }
+                if child_joints.is_empty() {
+                    // Thought it was root node but has no joints as children?
+                    Err(ImportError::NoRootNode(skin.index()))?;
+                }
+                joint_info.children = child_joints;
+
                 // Since this isn't a joint, there isn't an inverse binding to
                 // store, but there still could be a binding (node translation &
                 // rotation). This should be ok since the binding may effect
                 // children, but the inverse binding is only used in the final
                 // calculation of the joint transform... and this isn't a joint.
-                joint_tree.insert(
-                    root_index,
-                    joint_info_from_node(node_info, DualQuat::default()),
-                );
+                joint_tree.insert(root_index, joint_info);
             } else {
+                // Skeleton says there is a root node but it isn't in full tree
                 Err(ImportError::NoRootNode(skin.index()))?;
             }
         }
@@ -882,7 +897,7 @@ pub fn load_animations(
             channels,
         });
     }
-    debug!("animations={:?}", animations);
+    //debug!("animations={:?}", animations); // Probaby a LOT of data
 
     Ok((skeletons, animations))
 }
