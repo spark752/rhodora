@@ -27,27 +27,40 @@ void main() {
     // Texture coordinates will be interpolated
     f_tex_coord = tex_coord;
 
-    // Blend dual quaternions based on pose and joint weighting
-    mat2x4 blend = m.joints[joint_ids >> 24] * weights.x +
-        m.joints[joint_ids >> 16 & 0xff] * weights.y +
-        m.joints[joint_ids >> 8 & 0xff] * weights.z +
-        m.joints[joint_ids & 0xff] * weights.w;
-    float len = length(blend[0]);
-    if (len < 0.01) len = 1.0;
-    mat2x4 dq = blend / len;
+    // Find the relevant dual quaternions
+    mat2x4 dq0 = m.joints[joint_ids >> 24];
+    mat2x4 dq1 = m.joints[joint_ids >> 16 & 0xff];
+    mat2x4 dq2 = m.joints[joint_ids >> 8 & 0xff];
+    mat2x4 dq3 = m.joints[joint_ids & 0xff];
 
-    // Dual quaternion for position translation and rotation
-    vec4 ap = vec4(position + 2.0 * cross(dq[0].xyz,
-        cross(dq[0].xyz, position) + dq[0].w * position) +
-        2.0 * (dq[0].w * dq[1].xyz - dq[1].w * dq[0].xyz +
-        cross(dq[0].xyz, dq[1].xyz)), 1.0);
+    // Antipodality: quaternion q and -q represent the same rotation, but
+    // one will blend correctly and the other will lead to nightmares
+    if (dot(dq0[0], dq1[0]) < 0.0) dq1 *= -1.0;
+    if (dot(dq0[0], dq2[0]) < 0.0) dq2 *= -1.0;
+    if (dot(dq0[0], dq3[0]) < 0.0) dq3 *= -1.0;
+
+    // Linear blend and pseudo-normalize. A correct normal has an extra term
+    // for the dual part but that cancels out later on the transform.
+    mat2x4 blend =
+        dq0 * weights.x +
+        dq1 * weights.y +
+        dq2 * weights.z +
+        dq3 * weights.w;
+    blend = blend / max(length(blend[0]), 0.001);
+
+    // Position
+    vec4 ap = vec4(position + 2.0 * cross(blend[0].xyz,
+        cross(blend[0].xyz, position) + blend[0].w * position) +
+        2.0 * (blend[0].w * blend[1].xyz - blend[1].w * blend[0].xyz +
+        cross(blend[0].xyz, blend[1].xyz)), 1.0);
     vec4 pos_vs = m.model_view * ap;
-    f_position = vec3(pos_vs.xyz);
+    f_position = pos_vs.xyz;
 
-    // Real part of dual quaternion for normal rotation
-    vec4 an = vec4(normal + 2.0 * cross(dq[0].xyz,
-        cross(dq[0].xyz, normal) + dq[0].w * normal), 0.0);
-    f_normal = vec3(m.model_view * an);
+    // Normal
+    vec4 an = vec4(normal + 2.0 * cross(blend[0].xyz,
+        cross(blend[0].xyz, normal) + blend[0].w * normal), 0.0);
+    vec4 norm_vs = m.model_view * an;
+    f_normal = norm_vs.xyz;
 
     // Projected position as OpenGL style output
     gl_Position = vpl.proj * pos_vs;

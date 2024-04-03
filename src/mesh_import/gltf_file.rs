@@ -247,7 +247,7 @@ pub fn load(
                 }
             }
 
-            // Read the store the joints if they exist
+            // Read and store the joints if they exist
             if let Some(joint_data) = reader.read_joints(0) {
                 let ReadJoints::U8(joint_it) = joint_data else {
                     // We could try fitting these into u8 but if that wasn't
@@ -262,6 +262,10 @@ pub fn load(
                     joint_it.zip(weight_data).enumerate()
                 {
                     trace!("Joint ids={:?} weights={:?}", id_array, weights);
+                    let sum: f32 = weights.iter().sum();
+                    if (sum - 1.0_f32).abs() > 0.02_f32 {
+                        warn!("Vertex {i} weights aren't normalized={sum}");
+                    }
                     if i < verts.len() {
                         verts[i].joint_ids = id_array;
                         verts[i].weights = weights;
