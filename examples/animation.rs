@@ -1,4 +1,5 @@
 //! Demo of animation using rhodora
+
 use nalgebra_glm as glm;
 use rhodora::{
     boss::*,
@@ -91,11 +92,18 @@ impl Default for CameraManager {
 fn main() {
     env_logger::init();
 
+    // First argument is filename to load, second argument is animation index
+    // to play. This could be made nicer.
     let args: Vec<String> = std::env::args().collect();
     let file_path = if args.len() < 2 {
         FILENAME.to_string()
     } else {
         args[1].clone()
+    };
+    let req_anim = if args.len() < 3 {
+        0
+    } else {
+        args[2].parse::<usize>().unwrap_or(0)
     };
 
     let event_loop = EventLoop::new();
@@ -124,6 +132,7 @@ fn main() {
     let mut cbb = boss.create_primary_cbb().unwrap();
 
     // Load the model
+    println!("Loading {}", file_path);
     boss.load_model(&mut cbb, Path::new(&file_path), &ImportOptions::default())
         .unwrap();
     boss.model_manager
@@ -140,6 +149,33 @@ fn main() {
     let (skeletons, animations) =
         rhodora::mesh_import::gltf_file::load_animations(Path::new(&file_path))
             .unwrap();
+    println!(
+        "Found {} skeleton and {} animations",
+        skeletons.len(),
+        animations.len()
+    );
+    for a in &animations {
+        println!(
+            "Animation name=\"{}\" max_time={} channels={}",
+            a.name,
+            a.max_time,
+            a.channels.len()
+        );
+    }
+    let playback = {
+        if !skeletons.is_empty() && !animations.is_empty() {
+            if req_anim < animations.len() {
+                Some(req_anim)
+            } else {
+                Some(0)
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(a_index) = playback {
+        println!("Playing \"{}\"", animations[a_index].name);
+    }
 
     // Now wait for the future that shows the GPU finished the earlier transfers
     // and signalled the fence. This means the data needed for rendering should
@@ -157,6 +193,8 @@ fn main() {
     // Main loop
     boss.start_loop(SIM_RATE, Some(FRAME_DURATION));
     event_loop.run(move |event, _, control_flow| {
+        let playback = playback;
+
         // Run continually even without receiving OS events. For non game type
         // applications set_wait() would be a better choice.
         //control_flow.set_poll();
@@ -208,17 +246,18 @@ fn main() {
             }
 
             // Animation stuff
-            if !skeletons.is_empty() && !animations.is_empty() {
+            if let Some(a_index) = playback {
                 if let Some(elapsed) = boss.elapsed() {
                     let time = elapsed.as_secs_f32();
-                    let modu = time % (animations[0].max_time + 0.2_f32);
+                    let current_time =
+                        time % (animations[a_index].max_time + 0.2_f32);
 
                     let mut bone_stuff = JointTransforms::default();
                     rhodora::animation::animate(
                         &skeletons[0],
-                        &animations[0],
+                        &animations[a_index],
                         &mut bone_stuff.0,
-                        modu,
+                        current_time,
                     );
                     boss.model_manager.update_joints(0, bone_stuff);
                 }
