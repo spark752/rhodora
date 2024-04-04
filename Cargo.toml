@@ -32,7 +32,7 @@ ahash = "0.8.1"
 bytemuck = "1.12.3"
 egui = "0.21.0"
 egui-winit = "0.21.0"
-gltf = { version = "1.4.0", features = ["import", "names", "utils"] }
+gltf = { version = "1.4.0", features = ["extras", "import", "names", "utils"] }
 image = { version = "0.24.0", default-features = false, features = ["png"] }
 log = "0.4.8"
 nalgebra-glm = "0.18.0"
