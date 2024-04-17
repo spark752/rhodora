@@ -264,9 +264,9 @@ fn main() {
             }
 
             // Do the actual rendering. The `None` parameter indicates that
-            // we don't have a GUI to draw, but Rust makes us provide a
-            // type that implements the `GuiTrait` that would be used if we
-            // did have one, which is rather annoying.
+            // there is no GUI to draw, but Rust requires a type that implements
+            // the `GuiTrait` that would be used if there was one, which is
+            // rather annoying.
             boss.render_all(BACKGROUND, &camera, &lights, None::<&mut Gui>)
                 .unwrap();
         }

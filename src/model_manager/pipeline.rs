@@ -1,27 +1,15 @@
 use super::layout;
 use crate::{
     mesh_import::Style,
-    pbr_lights::PbrLightTrait,
     rh_error::RhError,
-    types::{CameraTrait, RenderFormat},
+    types::RenderFormat,
     util,
     vertex::{RigidFormat, SkinnedFormat},
 };
 use std::sync::Arc;
 use vulkano::{
-    buffer::{
-        allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
-        BufferUsage,
-    },
-    command_buffer::AutoCommandBufferBuilder,
-    descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet,
-        WriteDescriptorSet,
-    },
     device::Device,
     image::sampler::Sampler,
-    memory::allocator::{MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::PipelineBindPoint,
     pipeline::{
         graphics::{
             depth_stencil::{DepthState, DepthStencilState},
@@ -36,27 +24,17 @@ use vulkano::{
         DynamicState, GraphicsPipeline, PipelineLayout,
         PipelineShaderStageCreateInfo,
     },
-    shader::ShaderModule,
+    shader::{ShaderModule, ShaderModuleCreateInfo},
     Validated,
 };
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-use super::layout::{
-    LAYOUT_LIGHTS_BINDING, LAYOUT_PASS_SET, LAYOUT_PROJ_BINDING,
-};
-
-// Two descriptor sets: one for view and projection matrices which change once
-// per frame, the other for model matrix which is different for each model
-//pub type UniformVPL = skinned_vs::VPL;
-pub type UniformM = skinned_vs::M;
-
 pub struct Pipeline {
     pub style: Style,
     pub graphics: Arc<GraphicsPipeline>,
     pub sampler: Arc<Sampler>,
-    pub subbuffer_pool: SubbufferAllocator,
 }
 
 /// Helper function to build a vulkano pipeline compatible with vertex format T
@@ -146,133 +124,77 @@ impl Pipeline {
     pub fn new(
         style: Style,
         device: Arc<Device>,
-        mem_allocator: Arc<StandardMemoryAllocator>,
         render_format: &RenderFormat,
         sampler: Arc<Sampler>,
     ) -> Result<Self, RhError> {
         // Vulkano pipeline is build based on the style, which determines the
         // shaders and the expected vertex format
-        let frag_shader =
-            pbr_fs::load(device.clone()).map_err(Validated::unwrap)?;
+        let frag_shader = spirv_to_shader(
+            Arc::clone(&device),
+            include_bytes!(concat!(env!("OUT_DIR"), "/pbr.spv")),
+        )
+        .map_err(Validated::unwrap)?;
         let graphics = {
             match style {
                 Style::Rigid => build_vk_pipeline::<RigidFormat>(
-                    device.clone(),
+                    Arc::clone(&device),
                     render_format,
-                    &rigid_vs::load(device).map_err(Validated::unwrap)?,
+                    &spirv_to_shader(
+                        device,
+                        include_bytes!(concat!(env!("OUT_DIR"), "/rigid.spv")),
+                    )
+                    .map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
                 Style::Skinned => build_vk_pipeline::<SkinnedFormat>(
-                    device.clone(),
+                    Arc::clone(&device),
                     render_format,
-                    &skinned_vs::load(device).map_err(Validated::unwrap)?,
+                    &spirv_to_shader(
+                        device,
+                        include_bytes!(concat!(
+                            env!("OUT_DIR"),
+                            "/skinned.spv"
+                        )),
+                    )
+                    .map_err(Validated::unwrap)?,
                     &frag_shader,
                 ),
             }
         }?;
 
-        // Not sure how this works FIXME
-        // For vulkano 0.34 these need to have `memory_type_filter` set
-        // like below, or similar. Without that they can end up not accesible
-        // to the host and result in a `VkHostAccessError(NotHostMapped` when
-        // trying to write them from the CPU.
-        let subbuffer_pool = SubbufferAllocator::new(
-            mem_allocator,
-            SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::UNIFORM_BUFFER,
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-        );
-
         Ok(Self {
             style,
             graphics,
             sampler,
-            subbuffer_pool,
         })
     }
+}
 
-    #[must_use]
-    pub fn layout(&self) -> &Arc<PipelineLayout> {
-        use vulkano::pipeline::Pipeline as VulkanoPipeline; // For trait
-        self.graphics.layout()
-    }
-
-    /// Start rendering pass for this pipeline
-    ///
-    /// # Errors
-    /// May return `RhError`
-    ///
-    /// # Panics
-    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
-    pub fn start_pass<T>(
-        &self,
-        cbb: &mut AutoCommandBufferBuilder<T>,
-        desc_set_allocator: &StandardDescriptorSetAllocator,
-        camera: &impl CameraTrait,
-        lights: &impl PbrLightTrait,
-    ) -> Result<(), RhError> {
-        //trace!("Pipeline start_pass");
-
-        // `LAYOUT_PASS_SET` is descriptor set point used for things that
-        // keep the same value for the entire pass, such as projection matrix
-        // and lights. Since binding a descriptor set automatically unbinds
-        // higher numbered sets it should probably be equal to 0.
-        // FIXME Use layouts instead of relying on shader inspection
-        let proj_buffer = {
-            let data = skinned_vs::VPL {
-                proj: camera.proj_matrix().into(),
-            };
-            let buffer = self.subbuffer_pool.allocate_sized()?;
-            *buffer.write()? = data;
-            buffer
-        };
-        let lights_buffer = {
-            let data = pbr_fs::VPL {
-                ambient: lights.ambient_array(),
-                lights: lights.light_array(&camera.view_matrix()),
-            };
-            let buffer = self.subbuffer_pool.allocate_sized()?;
-            *buffer.write()? = data;
-            buffer
-        };
-
-        // There are Vulkan alignment requirements for descriptors pointing
-        // to the same uniform buffer, but vulkano seems to be taking care
-        // of that for us.
-        let desc_set = PersistentDescriptorSet::new(
-            desc_set_allocator,
-            util::get_layout(&self.graphics, LAYOUT_PASS_SET)?.clone(),
-            [
-                WriteDescriptorSet::buffer(LAYOUT_PROJ_BINDING, proj_buffer),
-                WriteDescriptorSet::buffer(
-                    LAYOUT_LIGHTS_BINDING,
-                    lights_buffer,
-                ),
-            ],
-            [],
+/// Convert SPIR-V code in a byte slice into a `ShaderModule`
+fn spirv_to_shader(
+    device: Arc<Device>,
+    bytes: &[u8],
+) -> Result<Arc<ShaderModule>, Validated<vulkano::VulkanError>> {
+    let words: Vec<u32> = vulkano::shader::spirv::bytes_to_words(bytes)
+        .unwrap()
+        .into_owned();
+    unsafe {
+        ShaderModule::new(
+            device, //
+            ShaderModuleCreateInfo::new(&words),
         )
-        .map_err(Validated::unwrap)?;
-        cbb.bind_pipeline_graphics(self.graphics.clone())
-            .unwrap() // `Box<ValidationError>`
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.layout().clone(),
-                LAYOUT_PASS_SET,
-                desc_set,
-            )
-            .unwrap(); // `Box<ValidationError>`
-        Ok(())
     }
 }
 
 // Shaders
+// Dump example plus some other stuff that should be cleaned up
+/*
 mod rigid_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/rigid.vert.glsl",
+        path: "shaders/rigid.vert",
+        vulkan_version: "1.2",
+        linalg_type: "nalgebra",
     }
 }
 
@@ -284,8 +206,11 @@ mod skinned_vs {
 
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/skinned.vert.glsl",
+        path: "shaders/skinned.vert",
         define: [("MAX_JOINTS", "32")],
+        vulkan_version: "1.2",
+        linalg_type: "nalgebra",
+        //dump: true,
     }
 }
 
@@ -294,7 +219,7 @@ mod skinned_vs {
 mod pbr_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "shaders/pbr.frag.glsl",
+        path: "shaders/pbr.frag",
         define: [("VISUALIZE", "1")],
     }
 }
@@ -304,6 +229,43 @@ mod pbr_fs {
 mod pbr_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "shaders/pbr.frag.glsl",
+        path: "shaders/pbr.frag",
+        vulkan_version: "1.2",
+        linalg_type: "nalgebra",
+        dump: true,
     }
 }
+*/
+
+/* Runtime compilation example
+   This requires `shaderc` and the Vulkan SDK as runtime dependencies so
+   is not included here
+#[allow(dead_code)]
+fn compile_glsl(device: Arc<Device>, glsl: &str) -> Arc<ShaderModule> {
+    use shaderc;
+
+    let compiler = shaderc::Compiler::new().unwrap();
+    let mut options = shaderc::CompileOptions::new().unwrap();
+    options.set_target_env(
+        shaderc::TargetEnv::Vulkan,
+        shaderc::EnvVersion::Vulkan1_3 as u32,
+    );
+    let binary_result = compiler
+        .compile_into_spirv(
+            glsl,
+            shaderc::ShaderKind::Vertex,
+            "some_useful_label",
+            "main",
+            Some(&options),
+        )
+        .unwrap();
+    let words = binary_result.as_binary();
+    unsafe {
+        ShaderModule::new(
+            device, //
+            ShaderModuleCreateInfo::new(words),
+        )
+    }
+    .unwrap()
+}
+*/

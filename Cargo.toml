@@ -14,6 +14,7 @@ exclude = [
 ]
 
 [features]
+# "rayon" can also be enabled. It is listed as an optional dependency.
 visualize = []
 
 # Enable a little optimization in debug mode
@@ -26,6 +27,7 @@ pedantic = "deny"
 nursery = "deny"
 string_to_string = "deny"
 panic = "deny"
+double_must_use = "allow"
 
 [dependencies]
 ahash = "0.8.1"
@@ -36,7 +38,7 @@ gltf = { version = "1.4.0", features = ["extras", "import", "names", "utils"] }
 image = { version = "0.24.0", default-features = false, features = ["png"] }
 log = "0.4.8"
 nalgebra-glm = "0.18.0"
-nalgebra = { version = "0.32.0", features = ["serde-serialize"] }
+nalgebra = { version = "0.32.0", features = ["bytemuck", "serde-serialize"] }
 parking_lot = "0.12.1"
 rayon = { version = "1.10.0", optional = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -50,6 +52,11 @@ winit = "0.28.0"
 [dev-dependencies]
 env_logger = "0.11.0"
 criterion = "0.5.0"
+
+[build-dependencies]
+# shaderc is used for compiling some shaders in build.rs. This is in addition
+# to its use by vulkano. It requires a compiler from the Vulkan SDK.
+shaderc = "0.8.3"
 
 [[bench]]
 name = "benchmark"

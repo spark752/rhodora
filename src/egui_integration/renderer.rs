@@ -682,13 +682,13 @@ pub struct RenderResources<'a> {
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/egui.vert.glsl",
+        path: "shaders/egui.vert",
     }
 }
 
 mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "shaders/egui.frag.glsl",
+        path: "shaders/egui.frag",
     }
 }

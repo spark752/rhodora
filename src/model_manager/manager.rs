@@ -1,15 +1,10 @@
 use super::{
     dvb_wrapper::DvbWrapper,
-    layout,
-    layout::{
-        PushConstantData, LAYOUT_MODEL_BINDING, LAYOUT_MODEL_SET,
-        LAYOUT_TEX_SET,
-    },
-    material,
-    material::{PbrMaterial, TexMaterial},
+    layout::{self, PushFragData, PushVertData, Writer},
+    material::{self, PbrMaterial, TexMaterial},
     mesh,
     model::{JointTransforms, Model},
-    pipeline::{Pipeline, UniformM},
+    pipeline::Pipeline,
 };
 use crate::{
     dvb::DeviceVertexBuffers,
@@ -18,17 +13,14 @@ use crate::{
     rh_error::RhError,
     texture::TextureManager,
     types::{CameraTrait, DeviceAccess, RenderFormat},
-    util,
     vertex::{Format, RigidFormat, SkinnedFormat},
 };
+use ahash::{HashMap, HashMapExt};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
     command_buffer::AutoCommandBufferBuilder,
-    descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet,
-        WriteDescriptorSet,
-    },
+    descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::Device,
     image::sampler::{
         Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
@@ -37,6 +29,7 @@ use vulkano::{
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
         graphics::vertex_input::Vertex as VertexTrait, PipelineBindPoint,
+        PipelineLayout,
     },
     Validated,
 };
@@ -46,10 +39,19 @@ use log::{debug, error, info, trace};
 
 const VERTEX_BINDING: u32 = 0;
 
+type ModelIndex = usize;
+type MatrixIndex = u32;
+
+/// Combines the pipeline with the buffers and a list of models that use them
+struct Conduit {
+    pipeline: Pipeline,
+    dvb: DvbWrapper,
+    model_indices: Vec<usize>,
+}
+
 pub struct Manager {
     models: Vec<Model>,
-    pipelines: Vec<Pipeline>,
-    dvbs: Vec<DvbWrapper>,
+    conduits: Vec<Conduit>,
     materials: Vec<PbrMaterial>,
     texture_manager: Arc<TextureManager>,
     device: Arc<Device>,
@@ -57,6 +59,8 @@ pub struct Manager {
     set_allocator: Arc<StandardDescriptorSetAllocator>,
     render_format: RenderFormat,
     sampler: Arc<Sampler>,
+    pipeline_layout: Arc<PipelineLayout>,
+    writer: Writer,
 }
 
 impl Manager {
@@ -77,11 +81,11 @@ impl Manager {
         // create a multithreaded loading routine that gets this and
         // uses it with fewer lifetime complications.
         let texture_manager =
-            Arc::new(TextureManager::new(mem_allocator.clone()));
+            Arc::new(TextureManager::new(Arc::clone(&mem_allocator)));
 
         // A default sampler for handling albedo textures
         let sampler = Sampler::new(
-            device_access.device.clone(),
+            Arc::clone(&device_access.device),
             SamplerCreateInfo {
                 mag_filter: Filter::Linear,
                 min_filter: Filter::Linear,
@@ -93,19 +97,33 @@ impl Manager {
         )
         .map_err(Validated::unwrap)?;
 
-        // Create the ModelManager now so we can use a member method to modify
+        // Layout used by the shaders
+        let pipeline_layout = {
+            let set_info = layout::pipeline_create_info();
+            PipelineLayout::new(
+                Arc::clone(&device_access.device),
+                set_info.into_pipeline_layout_create_info(Arc::clone(
+                    &device_access.device,
+                ))?,
+            )
+            .map_err(Validated::unwrap)?
+        };
+        let writer = Writer::new(&mem_allocator);
+
+        // Create the ModelManager now so a member method can be used to modify
         // it before returning
         let mut manager = Self {
             models: Vec::new(),
-            pipelines: Vec::new(),
-            dvbs: Vec::new(),
+            conduits: Vec::new(),
             materials: Vec::new(),
             texture_manager,
-            device: device_access.device.clone(),
+            device: Arc::clone(&device_access.device),
             mem_allocator,
             set_allocator: device_access.set_allocator,
             render_format,
-            sampler: sampler.clone(),
+            sampler,
+            pipeline_layout,
+            writer,
         };
 
         // Create a default material in index 0 to always have available.
@@ -124,16 +142,17 @@ impl Manager {
 
             // Creating the `PbrMaterial` needs a `Sampler` so one was added to
             // `Self`. Sharing is good. It also needs a `DescriptorSetLayout`
-            // binding the sampler plus texture. It would be nice to share that
-            // too eventually, but for now it is only here. As long as the
-            // created pipeline is compatible with it that should be ok.
-            let set_layout =
-                layout::create_tex_set_layout(device_access.device)?;
+            // binding the sampler plus texture so that is shared as part of
+            // the pipeline layout.
+            let set_layout = layout::descriptor_set_layout(
+                &manager.pipeline_layout,
+                layout::SUBMESH_SET,
+            )?;
             let pbr_material = material::tex_to_pbr(
                 &tex_material,
                 &manager.set_allocator,
-                &sampler,
-                &set_layout,
+                &manager.sampler,
+                set_layout,
             );
             pbr_material?
         };
@@ -158,32 +177,10 @@ impl Manager {
     fn create_pipeline(&self, style: Style) -> Result<Pipeline, RhError> {
         Pipeline::new(
             style,
-            self.device.clone(),
-            self.mem_allocator.clone(),
+            Arc::clone(&self.device),
             &self.render_format,
-            self.sampler.clone(),
+            Arc::clone(&self.sampler),
         )
-    }
-
-    /// Helper function to search for a compatible pipeline, creating one if
-    /// needed, and returning the index
-    ///
-    /// # Errors
-    /// May return `RhError`
-    fn find_create_pipeline(&mut self, style: Style) -> Result<usize, RhError> {
-        let pp_search = self.pipelines.iter().position(|p| p.style == style);
-
-        // The question mark operator in the else clause keeps us from
-        // using an `or_else` type method here
-        if let Some(i) = pp_search {
-            Ok(i)
-        } else {
-            // Add new pipeline and return its index
-            let i = self.pipelines.len();
-            let pp = self.create_pipeline(style)?;
-            self.pipelines.push(pp);
-            Ok(i)
-        }
     }
 
     /// Private helper function to process the batch.
@@ -199,40 +196,45 @@ impl Manager {
         batch: Batch,                      // Not a reference
         tex_opt: Option<Vec<TexMaterial>>, // Not a reference
     ) -> Result<Vec<usize>, RhError> {
-        // Look for an existing pipeline with the right configuration. If none
-        // exists, create one.
-        let pp_index = self.find_create_pipeline(batch.style)?;
+        // PREVIOUSLY: Look for an existing pipeline with the right
+        // configuration. If none exists, create one.
+        //let pp_index = self.find_create_pipeline(batch.style)?;
+        // But now pipeline and DVBs are being combined into one thing so
+        // there will be a pipeline per batch (but hopefully not many batches)
+        let conduit_index = self.conduits.len();
+        let pipeline = self.create_pipeline(batch.style)?;
 
         // Successful return will be a vector of the mesh indices
         let mut ret = Vec::new();
 
         // Create and store the shared DeviceVertexBuffer
-        let dvb_index = self.dvbs.len();
         // FIXME Do a much better job with this
-        if batch.style == Style::Skinned {
-            let Format::Skinned(data) = batch.vb_inter.interleaved else {
-                error!("Mismatch between batch style and data");
-                return Err(RhError::UnsupportedFormat);
-            };
-            let dvb = DeviceVertexBuffers::<SkinnedFormat>::new(
-                cbb,
-                self.mem_allocator.clone(),
-                batch.vb_index.indices,
-                data,
-            )?;
-            self.dvbs.push(dvb.into());
-        } else {
-            let Format::Rigid(data) = batch.vb_inter.interleaved else {
-                error!("Mismatch between batch style and data");
-                return Err(RhError::UnsupportedFormat);
-            };
-            let dvb = DeviceVertexBuffers::<RigidFormat>::new(
-                cbb,
-                self.mem_allocator.clone(),
-                batch.vb_index.indices,
-                data,
-            )?;
-            self.dvbs.push(dvb.into());
+        let dvb = {
+            if batch.style == Style::Skinned {
+                let Format::Skinned(data) = batch.vb_inter.interleaved else {
+                    error!("Mismatch between batch style and data");
+                    return Err(RhError::UnsupportedFormat);
+                };
+                let dvb = DeviceVertexBuffers::<SkinnedFormat>::new(
+                    cbb,
+                    Arc::clone(&self.mem_allocator),
+                    batch.vb_index.indices,
+                    data,
+                )?;
+                dvb.into()
+            } else {
+                let Format::Rigid(data) = batch.vb_inter.interleaved else {
+                    error!("Mismatch between batch style and data");
+                    return Err(RhError::UnsupportedFormat);
+                };
+                let dvb = DeviceVertexBuffers::<RigidFormat>::new(
+                    cbb,
+                    Arc::clone(&self.mem_allocator),
+                    batch.vb_index.indices,
+                    data,
+                )?;
+                dvb.into()
+            }
         };
 
         // Convert the meshes and store in Model Manager
@@ -242,8 +244,7 @@ impl Manager {
             ret.push(self.models.len());
             self.models.push(Model {
                 mesh,
-                pipeline_index: pp_index,
-                dvb_index,
+                conduit_index,
                 material_offset,
                 visible: false, // To prevent model from popping up at origin
                 matrix: glm::Mat4::identity(),
@@ -261,18 +262,26 @@ impl Manager {
         };
 
         // Process the materials, creating descriptors
-        let layout = util::get_layout(
-            &self.pipelines[pp_index].graphics,
-            LAYOUT_TEX_SET,
+        let set_layout = layout::descriptor_set_layout(
+            &self.pipeline_layout,
+            layout::SUBMESH_SET,
         )?;
         for m in tex_materials {
             self.materials.push(material::tex_to_pbr(
                 &m,
                 &self.set_allocator,
-                &self.pipelines[pp_index].sampler,
-                layout,
+                &pipeline.sampler,
+                set_layout,
             )?);
         }
+
+        // Store the conduit including the model indices which are conveniently
+        // in the return vec
+        self.conduits.push(Conduit {
+            pipeline,
+            dvb,
+            model_indices: ret.clone(), // probably a short Vec
+        });
 
         Ok(ret)
     }
@@ -375,114 +384,134 @@ impl Manager {
         self.models[index].joints = joints;
     }
 
+    /// Iterates through all models. If the model should be drawn, its
+    /// model-view matrix is calculated and stored. The index of that matrix is
+    /// then added to a map with the `model_index` as the key. This allows a
+    /// later drawing step to:
+    ///
+    /// 1. Check if a particular `model_index` should be drawn by checking if
+    /// it is in the map.
+    ///
+    /// 2. If in the map, get the corresponding `matrix_index` and pass it
+    /// to the vertex shader.
+    ///
+    /// 3. The shader can then use the `matrix_index` to get the model-view
+    /// matrix from an array within a SSBO. The shader doesn't need to know
+    /// about the `model_index` and the SSBO only needs enough data to cover
+    /// models actually being drawn.
+    ///
+    /// Note that the matrices are returned in a `Vec` with index 0 containing
+    /// the projection matrix. This is followed by the model-view matrices.
+    /// This data can be copied directly to the SSBO. The shader will see it
+    /// as two separate elements: a projection matrix, followed by an array of
+    /// model-view matrices. The `model_index` values stored in the map are
+    /// relative to this array, so will be correct in the shader, but off by
+    /// one if trying to index the return `Vec`.
+    ///
+    /// Currently the determination if a model should be drawn is simply by
+    /// checking its `visible` flag but some kind of culling can be added in
+    /// the future.
+    fn create_map(
+        &mut self,
+        camera: &impl CameraTrait,
+    ) -> (HashMap<ModelIndex, MatrixIndex>, Vec<glm::Mat4>) {
+        let mut map = HashMap::new();
+        let mut matrices = vec![camera.proj_matrix()];
+        let mut matrix_index: u32 = 0;
+        let view_matrix = camera.view_matrix();
+        for (i, model) in self.models.iter().enumerate() {
+            if model.visible {
+                matrices.push(view_matrix * model.matrix);
+                map.insert(i, matrix_index);
+                matrix_index += 1;
+            }
+        }
+        (map, matrices)
+    }
+
     /// Renders all the models. Provide a command buffer which has had
     /// `begin_rendering` and `set_viewport` called on it.
     ///
     /// # Errors
     /// May return `RhError`
+    ///
+    /// # Panics
+    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan.
     pub fn draw_all<T>(
-        &self,
+        &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
         desc_set_allocator: &StandardDescriptorSetAllocator,
         camera: &impl CameraTrait,
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
-        let mut bound_ppi: Option<usize> = None; // Index of bound pipeline
-        let mut bound_dvb: Option<usize> = None; // Index of bound DVBs
+        // Do culling and update matrices
+        let (map, matrices) = self.create_map(camera);
 
-        // There is no sorting here but because we load models in batches,
-        // a series of models will use the same DVBs and pipelines.
-        for model_index in 0..self.models.len() {
-            // If not visible, draw nothing. This is a user controllable flag.
-            // In the future additial conditions may be added for culling.
-            if !self.models[model_index].visible {
-                return Ok(());
-            }
+        // Bind things that are common to the entire pass.
+        // This includes a SSBO containing the projection matrix and an
+        // array of model view matrices for the vertex shader and a UBO
+        // with lighting information for the fragment shader.
+        let desc_set = self.writer.pass_set(
+            desc_set_allocator,
+            &self.pipeline_layout,
+            &matrices, // SSBO compatible Projection + Model-View array
+            &layout::Lighting {
+                ambient: lights.ambient_array(),
+                lights: lights.light_array(&camera.view_matrix()),
+            },
+        )?;
+        cbb.bind_descriptor_sets(
+            PipelineBindPoint::Graphics,
+            Arc::clone(&self.pipeline_layout),
+            layout::PASS_SET,
+            desc_set,
+        )
+        .unwrap(); // `Box<ValidationError>`
 
-            // Check if we need to bind a new pipeline for this model
-            let pp_index = self.models[model_index].pipeline_index;
-            let need_bind = bound_ppi.map_or(true, |i| i != pp_index);
-            if need_bind {
-                // Bind pipeline
-                //trace!("Binding the pipeline");
-                if pp_index < self.pipelines.len() {
-                    self.pipelines[pp_index].start_pass(
-                        cbb,
-                        desc_set_allocator,
-                        camera,
-                        lights,
-                    )?;
-                    bound_ppi = Some(pp_index);
-                } else {
-                    error!(
-                        "Model {} contains invalid pipeline_index {}",
-                        model_index, pp_index
-                    );
-                    return Err(RhError::PipelineError);
-                }
-            }
-
-            // Check if we need to bind new DVBs for this model
-            let dvb_index = self.models[model_index].dvb_index;
-            let need_bind = bound_dvb.map_or(true, |i| i != dvb_index);
-            if need_bind {
-                // Bind DVBs
-                //trace!("Binding DVBs");
-                if dvb_index < self.dvbs.len() {
-                    self.bind_dvbs(dvb_index, cbb);
-                    bound_dvb = Some(dvb_index);
-                } else {
-                    error!(
-                        "Model {} contains invalid dvb_index {}",
-                        model_index, dvb_index
-                    );
-                    return Err(RhError::RenderPassError);
-                }
-            }
-
-            // Draw
-            //trace!("Drawing model_index={model_index}");
-            self.draw_impl(
-                model_index,
-                pp_index,
-                cbb,
-                desc_set_allocator,
-                camera,
-            )?;
+        // Draw each conduit
+        for conduit in &self.conduits {
+            self.draw_conduit(conduit, cbb, desc_set_allocator, &map)?;
         }
         Ok(())
     }
 
-    /// Helper function for binding dvbs
+    /// Draw the models in a conduit, binding as necessary and checking
+    /// for visibility
     ///
     /// # Panics
-    /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
-    fn bind_dvbs<T>(
+    /// Will panic if `map` contains a model index which is out of range but
+    /// this should have been checked somewhere.
+    fn draw_conduit<T>(
         &self,
-        dvb_index: usize, // Caller checks if it is valid
+        conduit: &Conduit,
         cbb: &mut AutoCommandBufferBuilder<T>,
-    ) {
-        // Bind the vertex buffers, whichever vertex format they contain. The
-        // enum is unrolled and feed to this helper function that can take
-        // generics (closures can't).
-        fn bind<T, U: VertexTrait>(
-            cbb: &mut AutoCommandBufferBuilder<T>,
-            dvb: &DeviceVertexBuffers<U>,
-        ) {
-            cbb.bind_vertex_buffers(VERTEX_BINDING, dvb.interleaved.clone())
-                .unwrap() // `Box<ValidationError>`
-                .bind_index_buffer(dvb.indices.clone())
-                .unwrap(); // `Box<ValidationError>`
+        desc_set_allocator: &StandardDescriptorSetAllocator,
+        map: &HashMap<ModelIndex, MatrixIndex>,
+    ) -> Result<(), RhError> {
+        // Avoid binding if there is nothing to do
+        if conduit.model_indices.is_empty() {
+            return Ok(());
         }
-        match &self.dvbs[dvb_index] {
-            DvbWrapper::Skinned(dvb) => {
-                bind(cbb, dvb);
+
+        // Bind the pipeline and device vertex buffers
+        cbb.bind_pipeline_graphics(Arc::clone(&conduit.pipeline.graphics))
+            .unwrap(); // `Box<ValidationError>`
+        bind_dvb(&conduit.dvb, cbb);
+
+        // Draw. Assume indices are in range because they should have been
+        // checked somewhere.
+        for model_index in &conduit.model_indices {
+            // If this model is on the list of things to draw, do so
+            if let Some(matrix_index) = map.get(model_index) {
+                self.draw_impl(
+                    &self.models[*model_index],
+                    *matrix_index,
+                    cbb,
+                    desc_set_allocator,
+                )?;
             }
-            DvbWrapper::Rigid(dvb) => {
-                bind(cbb, dvb);
-            } // Adding more vertex formats will requre more duplicate code here
-              // but that will cause the build to fail so we will know that.
         }
+        Ok(())
     }
 
     /// Helper function used for drawing models
@@ -492,78 +521,39 @@ impl Manager {
     ///
     /// # Panics
     /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
-    #[allow(clippy::too_many_lines)]
     fn draw_impl<T>(
         &self,
-        model_index: usize,
-        pp_index: usize,
+        model: &Model,
+        matrix_index: MatrixIndex,
         cbb: &mut AutoCommandBufferBuilder<T>,
         desc_set_allocator: &StandardDescriptorSetAllocator,
-        camera: &impl CameraTrait,
     ) -> Result<(), RhError> {
-        // We know that model_index and pipeline_index are valid because
-        // the caller checks them and also binds appropriate stuff.
-
-        // Uniform buffer for model matrix should be in a descriptor set
-        // numbered between pass specific stuff and submesh specific stuff since
-        // binding will unbind higher numbered sets.
-        let m_buffer = {
-            // `model_view` is for converting positions to view space.
-            // It is also used for normals because non-uniform scaling is not
-            // supported.
-            let mv = camera.view_matrix() * self.models[model_index].matrix;
-            let data = UniformM {
-                model_view: mv.into(),
-                joints: self.models[model_index].joints.into(),
-            };
-            let buffer =
-                self.pipelines[pp_index].subbuffer_pool.allocate_sized()?;
-            *buffer.write()? = data;
-            buffer
-        };
-        let desc_set = PersistentDescriptorSet::new(
-            // Set 1
+        // FIXME
+        // Model matrix was moved into an array but joints have not been.
+        // And they are being set even if this model doesn't have joints.
+        let desc_set = self.writer.model_set(
             desc_set_allocator,
-            util::get_layout(
-                &self.pipelines[pp_index].graphics,
-                LAYOUT_MODEL_SET,
-            )?
-            .clone(),
-            [WriteDescriptorSet::buffer(LAYOUT_MODEL_BINDING, m_buffer)],
-            [],
-        )
-        .map_err(Validated::unwrap)?;
+            &self.pipeline_layout,
+            &layout::Joints {
+                joints: model.joints.into(),
+            },
+        )?;
 
         // CommandBufferBuilder should have a render pass started
         cbb.bind_descriptor_sets(
             PipelineBindPoint::Graphics,
-            self.pipelines[pp_index].layout().clone(),
-            LAYOUT_MODEL_SET, // starting set, higher values also changed
+            Arc::clone(&self.pipeline_layout),
+            layout::MODEL_SET, // starting set, higher values also changed
             desc_set,
         )
         .unwrap(); // This is a Box<ValidationError>
 
         // All of the submeshes are in the buffers and share a model matrix
-        // but they do need separate textures. They also have a rendering
-        // order that should be used instead of as stored.
-        for i in &self.models[model_index].mesh.order {
-            // FIXME Can we do this validation at loading time and be sure
-            // it is always valid?
-            if *i >= self.models[model_index].mesh.submeshes.len() {
-                error!(
-                    "model_index={} uses submesh={} with len={}",
-                    model_index,
-                    *i,
-                    self.models[model_index].mesh.submeshes.len()
-                );
-                return Err(RhError::IndexTooLarge);
-            }
-            let sub = self.models[model_index].mesh.submeshes[*i];
-
+        // but they do need separate textures.
+        for sub in &model.mesh.submeshes {
             // Get the material
             let material = {
-                let lib_mat_id =
-                    self.models[model_index].material_offset + sub.material_id;
+                let lib_mat_id = model.material_offset + sub.material_id;
                 if lib_mat_id < self.materials.len() {
                     &self.materials[lib_mat_id]
                 } else {
@@ -574,15 +564,21 @@ impl Manager {
             // Record material commands
             cbb.bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.pipelines[pp_index].layout().clone(),
-                LAYOUT_TEX_SET,
-                material.texture_set.clone(),
+                Arc::clone(&self.pipeline_layout),
+                layout::SUBMESH_SET,
+                Arc::clone(&material.texture_set),
             )
             .unwrap() // `Box<ValidationError>`
-            .push_constants(
-                self.pipelines[pp_index].layout().clone(),
-                0, // offset (must be multiple of 4)
-                push_constants(material),
+            .push_constants::<PushVertData>(
+                Arc::clone(&self.pipeline_layout),
+                layout::VERT_PUSH_OFFSET,
+                matrix_index.into(),
+            )
+            .unwrap() // `Box<ValidationError>`
+            .push_constants::<PushFragData>(
+                Arc::clone(&self.pipeline_layout),
+                layout::FRAG_PUSH_OFFSET,
+                material.into(),
             )
             .unwrap(); // `Box<ValidationError>`
 
@@ -600,18 +596,36 @@ impl Manager {
     }
 }
 
-/// Private helper to assemble push constants
-fn push_constants(material: &PbrMaterial) -> PushConstantData {
-    PushConstantData {
-        diffuse: [
-            material.diffuse[0],
-            material.diffuse[1],
-            material.diffuse[2],
-            1.0,
-        ],
-        roughness: material.roughness,
-        metalness: material.metalness,
-        // TODO: Add visualization stuff here somehow
-        ..Default::default()
+/// Private helper for binding DVBs
+///
+/// # Panics
+/// Will panic if a `vulkano::ValidationError` is returned by Vulkan
+fn bind_dvb<T>(
+    dvb_wrapper: &DvbWrapper,
+    cbb: &mut AutoCommandBufferBuilder<T>,
+) {
+    // Bind the vertex buffers, whichever vertex format they contain. The
+    // enum is unrolled and feed to this helper function that can take
+    // generics (closures can't).
+    fn bind<T, U: VertexTrait>(
+        cbb: &mut AutoCommandBufferBuilder<T>,
+        dvb: &DeviceVertexBuffers<U>,
+    ) {
+        cbb.bind_vertex_buffers(
+            VERTEX_BINDING,          // probably 0
+            dvb.interleaved.clone(), // struct containing Arcs
+        )
+        .unwrap() // `Box<ValidationError>`
+        .bind_index_buffer(dvb.indices.clone()) // struct containing Arcs
+        .unwrap(); // `Box<ValidationError>`
+    }
+    match dvb_wrapper {
+        DvbWrapper::Skinned(dvb) => {
+            bind(cbb, dvb);
+        }
+        DvbWrapper::Rigid(dvb) => {
+            bind(cbb, dvb);
+        } // Adding more vertex formats will requre more duplicate code here
+          // but that will cause the build to fail so we will know that.
     }
 }

@@ -399,7 +399,7 @@ impl Boss {
     /// # Panics
     /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
     pub fn render_main_pass<T>(
-        &self,
+        &mut self,
         cbb: &mut AutoCommandBufferBuilder<T>,
         background: [f32; 4],
         camera: &impl CameraTrait,

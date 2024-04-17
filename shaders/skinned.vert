@@ -1,5 +1,7 @@
-#version 450
+#version 460
 // #define MAX_JOINTS when compiling
+// FIXME do that thing above
+#define MAX_JOINTS 32
 
 // Vertex format
 layout(location = 0) in vec3 position;
@@ -14,24 +16,28 @@ layout(location = 0) out vec3 f_normal;
 layout(location = 1) out vec3 f_position;
 layout(location = 2) out vec2 f_tex_coord;
 
-layout(set = 0, binding = 0) uniform VPL {
+layout(set = 0, binding = 0) buffer Matrices {
     mat4 proj;
-} vpl;
+    mat4 model_view[];
+};
 
-layout(set = 1, binding = 0) uniform M {
-    mat4 model_view;
+layout(set = 1, binding = 0) uniform Joints {
     mat2x4 joints[MAX_JOINTS];
-} m;
+};
+
+layout(push_constant, std430) uniform VertData {
+   uint model_index;
+};
 
 void main() {
     // Texture coordinates will be interpolated
     f_tex_coord = tex_coord;
 
     // Find the relevant dual quaternions
-    mat2x4 dq0 = m.joints[joint_ids >> 24];
-    mat2x4 dq1 = m.joints[joint_ids >> 16 & 0xff];
-    mat2x4 dq2 = m.joints[joint_ids >> 8 & 0xff];
-    mat2x4 dq3 = m.joints[joint_ids & 0xff];
+    mat2x4 dq0 = joints[joint_ids >> 24];
+    mat2x4 dq1 = joints[joint_ids >> 16 & 0xff];
+    mat2x4 dq2 = joints[joint_ids >> 8 & 0xff];
+    mat2x4 dq3 = joints[joint_ids & 0xff];
 
     // Antipodality: quaternion q and -q represent the same rotation, but
     // one will blend correctly and the other will lead to nightmares
@@ -53,15 +59,15 @@ void main() {
         cross(blend[0].xyz, position) + blend[0].w * position) +
         2.0 * (blend[0].w * blend[1].xyz - blend[1].w * blend[0].xyz +
         cross(blend[0].xyz, blend[1].xyz)), 1.0);
-    vec4 pos_vs = m.model_view * ap;
+    vec4 pos_vs = model_view[model_index] * ap;
     f_position = pos_vs.xyz;
 
     // Normal
     vec4 an = vec4(normal + 2.0 * cross(blend[0].xyz,
         cross(blend[0].xyz, normal) + blend[0].w * normal), 0.0);
-    vec4 norm_vs = m.model_view * an;
+    vec4 norm_vs = model_view[model_index] * an;
     f_normal = norm_vs.xyz;
 
     // Projected position as OpenGL style output
-    gl_Position = vpl.proj * pos_vs;
+    gl_Position = proj * pos_vs;
 }

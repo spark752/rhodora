@@ -302,13 +302,13 @@ impl PostProcess {
 mod vs_quad {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "shaders/post.vert.glsl",
+        path: "shaders/post.vert",
     }
 }
 
 mod fs_quad {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "shaders/post.frag.glsl",
+        path: "shaders/post.frag",
     }
 }

@@ -1,4 +1,4 @@
-#version 450
+#version 460
 
 // Basic sort of fragment shader for PBR lighting
 // Based in part on learnopengl.com and on "Moving Frostbite to Physically
@@ -28,7 +28,7 @@ layout(location = 2) in vec2 f_tex_coord;
 
 // The lights array currently contains point lights with each position in view
 // space in the xyz elements and its intensity in the w element.
-layout(set = 0, binding = 1) uniform VPL {
+layout(set = 0, binding = 1) uniform Lighting {
     vec4 ambient;
     vec4 lights[4];
 } vpl;
@@ -38,8 +38,9 @@ layout(set = 2, binding = 0) uniform sampler2D tex;
 
 // Material parameters as push constants. Push constants are faster than uniform
 // buffers but Vulkan only requires a minimum size of 128 bytes for the block.
-layout(push_constant) uniform PushConstantData {
-    vec4 diffuse; // Multiplied by diffuse texture contents (alpha not used)
+layout(push_constant, std430) uniform FragData {
+    layout(offset = 16)
+    vec4 diffuse; // Multiplied by diffuse texture (alpha not used)
     float roughness;
     float metalness;
     uint ambient_mode;  // Used only for VISUALIZE
