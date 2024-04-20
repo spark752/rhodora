@@ -326,9 +326,7 @@ fn load_materials(
 
     // Data is collected but textures are not loaded here. There is not much
     // computation and probably a small number of textures so it is likely
-    // not worth parallelizing this. While it could be done with rayon's
-    // `par_bridge`, the main issue is that code is currently relying on the
-    // order of the returned vector which would not be the same.
+    // not worth parallelizing this,
     document.materials().map(|m| {
         let pbr = m.pbr_metallic_roughness();
         let diffuse = {

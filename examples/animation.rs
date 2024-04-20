@@ -148,7 +148,10 @@ fn main() {
     // Test some animation things
     let (skeletons, animations) =
         rhodora::mesh_import::gltf_file::load_animations(Path::new(&file_path))
-            .unwrap();
+            .unwrap_or_else(|e| {
+                println!("Could not load animations: {e}");
+                (Vec::new(), Vec::new())
+            });
     println!(
         "Found {} skeleton and {} animations",
         skeletons.len(),

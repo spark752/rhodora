@@ -21,7 +21,8 @@ pub fn load(
     vb_inter: &mut InterBuffer,
 ) -> Result<MeshLoaded, RhError> {
     let load_result = tobj::load_obj(path, &tobj::GPU_LOAD_OPTIONS);
-    process_obj(import_options, load_result, vb_index, vb_inter)
+    let base_path = path.parent().unwrap_or_else(|| Path::new("."));
+    process_obj(base_path, import_options, load_result, vb_index, vb_inter)
 }
 
 /// Process loaded Wavefront OBJ format data. Called by `load_obj` or can be
@@ -30,6 +31,7 @@ pub fn load(
 /// # Errors
 /// May return `RhError`
 pub fn process_obj(
+    base_path: &Path,
     import_options: &ImportOptions,
     load_result: tobj::LoadResult,
     vb_index: &mut IndexBuffer,
@@ -133,9 +135,19 @@ pub fn process_obj(
     // "Pm" for metalness so that is implemented here.
     let mut materials = Vec::new();
     for m in &tobj_materials.unwrap_or_default() {
-        info!("Processing material {:?}", m.name);
+        let colour_filename = {
+            if m.diffuse_texture.is_empty() {
+                String::new()
+            } else {
+                base_path.join(&m.diffuse_texture).display().to_string()
+            }
+        };
+        info!(
+            "Processing material {:?} with texture \"{}\"",
+            m.name, colour_filename
+        );
         let material = ImportMaterial {
-            colour_filename: m.diffuse_texture.clone(),
+            colour_filename,
             diffuse: m.diffuse,
             roughness: m
                 .unknown_param
