@@ -89,11 +89,13 @@ fn validate(p: &Primitive) -> Result<(usize, usize), RhError> {
         (p.get(&Semantic::Positions).ok_or(ImportError::NoPositions))?;
     let vert_count = positions.count();
 
-    // Normals are required. There must be the same number of normals as
-    // there are positions.
-    let normals = (p.get(&Semantic::Normals).ok_or(ImportError::NoNormals))?;
-    if normals.count() != vert_count {
-        Err(ImportError::NoIndices)?;
+    // Normals are highly recommended. If present there must be the same number
+    // of normals as there are positions.
+    let normals_option = p.get(&Semantic::Normals);
+    if let Some(ref normals) = normals_option {
+        if normals.count() != vert_count {
+            Err(ImportError::CountMismatch)?;
+        }
     }
 
     // Check optional features just for info
@@ -102,10 +104,11 @@ fn validate(p: &Primitive) -> Result<(usize, usize), RhError> {
 
     // A little info
     info!(
-        "Submesh={}, Index count={}, Vertex count={}, Has UV={}, Has joints={}",
+        "Submesh={}, vertices={}, triangles={}, has_normals={}, has_uv={}, has_joints={}",
         p.index(),
-        idx_count,
         vert_count,
+        idx_count / 3,
+        normals_option.is_some(),
         uv_option.is_some(),
         joint_option.is_some(),
     );
@@ -172,6 +175,8 @@ pub fn load(
     for m in document.meshes() {
         info!("mesh={}, name={:?}", m.index(), m.name());
         for p in m.primitives() {
+            let benchmark = std::time::Instant::now();
+
             // Validate certain aspects of the glTF. These should include that
             // the number of positions is equal to the number of normals etc.
             // since we don't know how to interpret the data if they aren't
@@ -181,26 +186,26 @@ pub fn load(
             // Create a reader for the data buffer
             let reader = p.reader(|x| Some(&buffers[x.index()]));
 
-            // Read the indices and store them as 16 bits directly to the
-            // output buffer. There is a `into_u32` provided but not one for
-            // 16 bits.
+            // Read the indices and store them as 16 bits. There is a `into_u32`
+            // provided in the glTF library but not one for 16 bits.
+            let mut import_indices: Vec<u16> = Vec::new();
             let idx_data =
                 reader.read_indices().ok_or(ImportError::NoIndices)?;
             match idx_data {
                 ReadIndices::U8(it) => {
                     for i in it {
-                        vb_index.push_index(u16::from(i));
+                        import_indices.push(u16::from(i));
                     }
                 }
                 ReadIndices::U16(it) => {
                     for i in it {
-                        vb_index.push_index(i);
+                        import_indices.push(i);
                     }
                 }
                 ReadIndices::U32(it) => {
                     info!("Trying to convert 32 bit indices to 16 bit");
                     for i in it {
-                        vb_index.push_index(
+                        import_indices.push(
                             u16::try_from(i)
                                 .map_err(|_| RhError::IndexTooLarge)?,
                         );
@@ -209,7 +214,7 @@ pub fn load(
             }
 
             // Create an import vertex buffer to build up the other data
-            let mut verts = Vec::new();
+            let mut import_vertices: Vec<ImportVertex> = Vec::new();
 
             // Read and store positions into the import vertex buffer, scaling
             // if needed
@@ -220,29 +225,39 @@ pub fn load(
             };
             for i in it {
                 let v = ImportVertex {
-                    position: [i[0] * scale, -i[2] * scale, i[1] * scale],
+                    position: glm::Vec3::new(
+                        i[0] * scale,
+                        -i[2] * scale,
+                        i[1] * scale,
+                    ),
                     ..Default::default()
                 };
-                verts.push(v);
+                import_vertices.push(v);
             }
 
-            // Read and store normals into the import vertex buffer
-            let norm_data =
-                reader.read_normals().ok_or(ImportError::NoNormals)?;
-            let ReadNormals::Standard(it) = norm_data else {
-                return Err(ImportError::SparseMesh)?;
+            // Read and store normals if they exist
+            let has_normals = {
+                reader.read_normals().map_or(false, |norm_data| {
+                    if let ReadNormals::Standard(it) = norm_data {
+                        for (i, norm) in it.enumerate() {
+                            if i < import_vertices.len() {
+                                import_vertices[i].normal =
+                                    glm::Vec3::new(norm[0], -norm[2], norm[1]);
+                            }
+                        }
+                        true
+                    } else {
+                        warn!("Sparse normals not supported");
+                        false
+                    }
+                })
             };
-            for (i, norm) in it.enumerate() {
-                if i < verts.len() {
-                    verts[i].normal = [norm[0], -norm[2], norm[1]];
-                }
-            }
 
             // Read and store the texture coordinates if they exist
             if let Some(uv_data) = reader.read_tex_coords(0) {
                 for (i, uv) in uv_data.into_f32().enumerate() {
-                    if i < verts.len() {
-                        verts[i].tex_coord = uv;
+                    if i < import_vertices.len() {
+                        import_vertices[i].tex_coord = uv;
                     }
                 }
             }
@@ -250,8 +265,8 @@ pub fn load(
             // Read and store the joints if they exist
             if let Some(joint_data) = reader.read_joints(0) {
                 let ReadJoints::U8(joint_it) = joint_data else {
-                    // We could try fitting these into u8 but if that wasn't
-                    // used by the file it probably means they won't fit
+                    // Could try to fit these into u8 but if they fit that
+                    // would have probably been used by the file
                     return Err(ImportError::BigJointIndices)?;
                 };
                 let weight_data = reader
@@ -266,27 +281,32 @@ pub fn load(
                     if (sum - 1.0_f32).abs() > 0.02_f32 {
                         warn!("Vertex {i} weights aren't normalized={sum}");
                     }
-                    if i < verts.len() {
-                        verts[i].joint_ids = id_array;
-                        verts[i].weights = weights;
+                    if i < import_vertices.len() {
+                        import_vertices[i].joint_ids = id_array;
+                        import_vertices[i].weights = weights;
                     }
                 }
             }
 
-            // Validate that we have the expected amount of information
-            if vert_count != verts.len() {
+            // Validate that there is the expected amount of information
+            if vert_count != import_vertices.len() {
                 error!(
                     "Vertex count mismatch {} != {}",
                     vert_count,
-                    verts.len()
+                    import_vertices.len()
                 );
                 Err(ImportError::CountMismatch)?;
             }
 
-            // Push the import vertex data into the output buffer, converting
-            // the vertex format
-            for v in verts {
-                vb_inter.push(v);
+            // Do possible additional processing of the intermediate data
+            if !has_normals {
+                warn!(
+                    "Missing normals are being calculated and might be wrong"
+                );
+                super::util::calculate_normals(
+                    &import_indices,
+                    &mut import_vertices,
+                );
             }
 
             // Collect information
@@ -301,6 +321,11 @@ pub fn load(
                 vertex_count,
                 material_id: p.material().index().unwrap_or(0),
             });
+
+            // Collect into the output struct
+            vb_inter.append(&import_vertices);
+            vb_index.indices.append(&mut import_indices); // Consumes input
+            debug!("Processing took {:?}", benchmark.elapsed());
 
             // Prepare for next submesh
             vertex_offset += vertex_count;

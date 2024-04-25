@@ -36,6 +36,7 @@ egui = "0.21.0"
 egui-winit = "0.21.0"
 gltf = { version = "1.4.0", features = ["extras", "import", "names", "utils"] }
 image = { version = "0.24.0", default-features = false, features = ["png"] }
+itertools = "0.10.5"
 log = "0.4.8"
 nalgebra-glm = "0.18.0"
 nalgebra = { version = "0.32.0", features = ["bytemuck", "serde-serialize"] }

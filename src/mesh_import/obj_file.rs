@@ -1,3 +1,4 @@
+use nalgebra_glm as glm;
 use std::path::Path;
 
 use super::types::{
@@ -6,7 +7,12 @@ use super::types::{
 use crate::mesh_import::ImportError;
 use crate::rh_error::RhError;
 use crate::vertex::{IndexBuffer, InterBuffer};
-use log::info;
+
+#[allow(unused_imports)]
+use log::{debug, info, warn};
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 
 /// Load a Wavefront OBJ format object from an .obj file. Loads the file into
 /// memory and calls `process_obj`. You may call that directly if you've loaded
@@ -50,73 +56,101 @@ pub fn process_obj(
     // Models aka submeshes
     // Load each mesh sequentially into the vertex buffer
     for m in &tobj_models {
+        let benchmark = std::time::Instant::now();
         let mesh = &m.mesh;
-        if mesh.positions.len() != mesh.normals.len() {
-            Err(ImportError::NoNormals)?;
+        let has_normals = !mesh.normals.is_empty();
+        if has_normals && (mesh.positions.len() != mesh.normals.len()) {
+            Err(ImportError::CountMismatch)?;
         }
         let pos_count = mesh.positions.len() / 3;
         let idx_count = mesh.indices.len();
         let has_uv = !mesh.texcoords.is_empty();
         info!(
-            "Submesh vertices={}, triangles={}",
+            "Submesh vertices={}, triangles={}, has_normals={}, has_uv={}",
             pos_count,
-            idx_count / 3
+            idx_count / 3,
+            has_normals,
+            has_uv,
         );
+        let vertex_count = i32::try_from(pos_count)
+            .map_err(|_| RhError::VertexCountTooLarge)?;
+        let index_count = u32::try_from(mesh.indices.len())
+            .map_err(|_| RhError::IndexCountTooLarge)?;
 
-        // Convert normals to Z axis and and interleave. This file format does
-        // not support skinning.
-        for v in 0..pos_count {
-            let bf = ImportVertex {
-                position: if swizzle {
-                    [
-                        mesh.positions[v * 3] * scale,
-                        -mesh.positions[v * 3 + 2] * scale,
-                        mesh.positions[v * 3 + 1] * scale,
-                    ]
-                } else {
-                    [
-                        mesh.positions[v * 3] * scale,
-                        mesh.positions[v * 3 + 1] * scale,
-                        mesh.positions[v * 3 + 2] * scale,
-                    ]
-                },
-                normal: if swizzle {
-                    [
-                        mesh.normals[v * 3],
-                        -mesh.normals[v * 3 + 2],
-                        mesh.normals[v * 3 + 1],
-                    ]
-                } else {
-                    [
-                        mesh.normals[v * 3],
-                        mesh.normals[v * 3 + 1],
-                        mesh.normals[v * 3 + 2],
-                    ]
-                },
-                tex_coord: if has_uv {
-                    [mesh.texcoords[v * 2], 1.0 - mesh.texcoords[v * 2 + 1]]
-                } else {
-                    [0.0, 0.0]
-                },
-                ..Default::default()
-            };
-            vb_inter.push(bf);
-        }
-
-        // Convert to 16 bit indices. Iter/map is complicated by the question
-        // mark operator on the `map_err` so just use ranged loop.
+        // Convert to 16 bit indices from the obj file's u32.
+        // The possible error & question mark operator makes using a closure
+        // messy, so just use a ranged loop.
+        let mut import_indices: Vec<u16> = Vec::new();
         for i in 0..idx_count {
-            vb_index.push_index(
+            import_indices.push(
                 u16::try_from(mesh.indices[i])
                     .map_err(|_| RhError::IndexTooLarge)?,
             );
         }
 
+        // Collect data into the intermediate vertex format.
+        // Initial testing of the rayon enabled version shows that it is
+        // significantly SLOWER than the serial version.
+        #[cfg(feature = "rayon")]
+        let it = (0..pos_count).into_par_iter();
+        #[cfg(not(feature = "rayon"))]
+        let it = 0..pos_count;
+        let mut import_vertices: Vec<ImportVertex> = it
+            .map(|v| ImportVertex {
+                position: if swizzle {
+                    glm::Vec3::new(
+                        mesh.positions[v * 3] * scale,
+                        -mesh.positions[v * 3 + 2] * scale,
+                        mesh.positions[v * 3 + 1] * scale,
+                    )
+                } else {
+                    glm::Vec3::new(
+                        mesh.positions[v * 3] * scale,
+                        mesh.positions[v * 3 + 1] * scale,
+                        mesh.positions[v * 3 + 2] * scale,
+                    )
+                },
+                normal: if has_normals {
+                    if swizzle {
+                        glm::Vec3::new(
+                            mesh.normals[v * 3],
+                            -mesh.normals[v * 3 + 2],
+                            mesh.normals[v * 3 + 1],
+                        )
+                    } else {
+                        glm::Vec3::new(
+                            mesh.normals[v * 3],
+                            mesh.normals[v * 3 + 1],
+                            mesh.normals[v * 3 + 2],
+                        )
+                    }
+                } else {
+                    glm::Vec3::new(0.0_f32, 0.0_f32, 0.0_f32)
+                },
+                tex_coord: if has_uv {
+                    [mesh.texcoords[v * 2], 1.0 - mesh.texcoords[v * 2 + 1]]
+                } else {
+                    [0.0_f32, 0.0_f32]
+                },
+                ..Default::default()
+            })
+            .collect();
+
+        // Do possible additional processing of the intermediate data
+        if !has_normals {
+            warn!("Missing normals are being calculated and might be wrong");
+            super::util::calculate_normals(
+                &import_indices,
+                &mut import_vertices,
+            );
+        }
+
+        // Collect into the output struct
+        vb_inter.append(&import_vertices);
+        vb_index.indices.append(&mut import_indices); // Consumes input
+        debug!("Processing took {:?}", benchmark.elapsed());
+
         // Collect information
-        let vertex_count = i32::try_from(pos_count)
-            .map_err(|_| RhError::VertexCountTooLarge)?;
-        let index_count = u32::try_from(mesh.indices.len())
-            .map_err(|_| RhError::IndexCountTooLarge)?;
         submeshes.push(Submesh {
             index_count,
             first_index,

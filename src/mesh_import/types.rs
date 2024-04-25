@@ -1,3 +1,4 @@
+use nalgebra_glm as glm;
 use serde::{Deserialize, Serialize};
 
 /// Properties of the submesh
@@ -68,8 +69,8 @@ pub struct MeshLoaded {
 /// Intermediate vertex format for interleaved data
 #[derive(Default)]
 pub struct ImportVertex {
-    pub position: [f32; 3],
-    pub normal: [f32; 3],
+    pub position: glm::Vec3,
+    pub normal: glm::Vec3,
     pub tex_coord: [f32; 2],
     pub joint_ids: [u8; 4],
     pub weights: [f32; 4],
