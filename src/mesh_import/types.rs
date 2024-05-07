@@ -72,6 +72,7 @@ pub struct ImportVertex {
     pub position: glm::Vec3,
     pub normal: glm::Vec3,
     pub tex_coord: [f32; 2],
+    pub mask: u32,
     pub joint_ids: [u8; 4],
     pub weights: [f32; 4],
 }

@@ -1,5 +1,4 @@
 use crate::rh_error::RhError;
-use log::info;
 use std::sync::Arc;
 use vulkano::{
     device::{
@@ -12,7 +11,7 @@ use vulkano::{
         debug::{
             DebugUtilsMessageSeverity, DebugUtilsMessageType,
             DebugUtilsMessenger, DebugUtilsMessengerCallback,
-            DebugUtilsMessengerCreateInfo,
+            DebugUtilsMessengerCallbackData, DebugUtilsMessengerCreateInfo,
         },
         Instance, InstanceCreateInfo, InstanceExtensions,
     },
@@ -26,6 +25,9 @@ use winit::{
     event_loop::EventLoop,
 };
 
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+
 pub struct Properties {
     pub dimensions: [u32; 2],
     pub title: String,
@@ -37,6 +39,7 @@ pub struct VkWindow {
     physical: Arc<PhysicalDevice>,
     device: Arc<Device>,
     graphics_queue: Arc<Queue>,
+    _debug_callback: Option<DebugUtilsMessenger>,
 }
 
 impl VkWindow {
@@ -80,66 +83,62 @@ impl VkWindow {
         // Interface for Vulkan validation layers.
         // DebugUtilsMessenger is unsafe so this block is required to be
         // unsafe.
-        let _debug_callback = unsafe {
-            DebugUtilsMessenger::new(
-                instance.clone(),
-                DebugUtilsMessengerCreateInfo {
-                    message_severity: DebugUtilsMessageSeverity::ERROR
-                        | DebugUtilsMessageSeverity::WARNING
-                        | DebugUtilsMessageSeverity::INFO
-                        | DebugUtilsMessageSeverity::VERBOSE,
-                    message_type: DebugUtilsMessageType::GENERAL
-                        | DebugUtilsMessageType::VALIDATION
-                        | DebugUtilsMessageType::PERFORMANCE,
-                    ..DebugUtilsMessengerCreateInfo::user_callback(
-                        DebugUtilsMessengerCallback::new(
-                            |msg_severity, msg_type, callback_data| {
-                                let severity = if msg_severity.intersects(
-                                    DebugUtilsMessageSeverity::ERROR,
-                                ) {
-                                    "error"
-                                } else if msg_severity.intersects(
-                                    DebugUtilsMessageSeverity::WARNING,
-                                ) {
-                                    "warning"
-                                } else if msg_severity
-                                    .intersects(DebugUtilsMessageSeverity::INFO)
-                                {
-                                    "information"
-                                } else {
-                                    "verbose"
-                                };
-
-                                let ty = if msg_type
-                                    .intersects(DebugUtilsMessageType::GENERAL)
-                                {
-                                    "general"
-                                } else if msg_type.intersects(
-                                    DebugUtilsMessageType::VALIDATION,
-                                ) {
-                                    "validation"
-                                } else {
-                                    "performance"
-                                };
-
-                                // The layers will mostly report "info" type
-                                // messages so the `info!` macro seems like a
-                                // reasonable choice
-                                info!(
-                                    "{} {} {}: {}",
-                                    callback_data
-                                        .message_id_name
-                                        .unwrap_or("unknown"),
-                                    ty,
-                                    severity,
-                                    callback_data.message
-                                );
-                            },
-                        ),
-                    )
-                },
-            )
-            .ok()
+        let debug_callback = {
+            fn callback(
+                msg_severity: DebugUtilsMessageSeverity,
+                msg_type: DebugUtilsMessageType,
+                callback_data: &DebugUtilsMessengerCallbackData,
+            ) {
+                let name = callback_data.message_id_name.unwrap_or("unknown");
+                let ty = if msg_type.intersects(DebugUtilsMessageType::GENERAL)
+                {
+                    "general"
+                } else if msg_type.intersects(DebugUtilsMessageType::VALIDATION)
+                {
+                    "validation"
+                } else {
+                    "performance"
+                };
+                if msg_severity.intersects(DebugUtilsMessageSeverity::ERROR) {
+                    error!("{} {}: {}", name, ty, callback_data.message);
+                } else if msg_severity
+                    .intersects(DebugUtilsMessageSeverity::WARNING)
+                {
+                    warn!("{} {}: {}", name, ty, callback_data.message);
+                } else if msg_severity
+                    .intersects(DebugUtilsMessageSeverity::INFO)
+                {
+                    info!("{} {}: {}", name, ty, callback_data.message);
+                } else {
+                    debug!("{} {}: {}", name, ty, callback_data.message);
+                };
+            }
+            unsafe {
+                DebugUtilsMessenger::new(
+                    instance.clone(),
+                    DebugUtilsMessengerCreateInfo {
+                        message_severity: DebugUtilsMessageSeverity::ERROR
+                            | DebugUtilsMessageSeverity::WARNING
+                            | DebugUtilsMessageSeverity::INFO
+                            | DebugUtilsMessageSeverity::VERBOSE,
+                        message_type: DebugUtilsMessageType::GENERAL
+                            | DebugUtilsMessageType::VALIDATION
+                            | DebugUtilsMessageType::PERFORMANCE,
+                        ..DebugUtilsMessengerCreateInfo::user_callback(
+                            DebugUtilsMessengerCallback::new(
+                                |msg_severity, msg_type, callback_data| {
+                                    callback(
+                                        msg_severity,
+                                        msg_type,
+                                        &callback_data,
+                                    );
+                                },
+                            ),
+                        )
+                    },
+                )
+                .ok()
+            }
         }; // unsafe block
 
         let size = LogicalSize::new(
@@ -164,6 +163,7 @@ impl VkWindow {
             khr_swapchain: true,
             ..DeviceExtensions::empty()
         };
+
         let (physical, queue_family_index) = instance
             .enumerate_physical_devices()?
             .filter(|p| p.api_version() >= vulkano::Version::V1_3)
@@ -219,6 +219,7 @@ impl VkWindow {
             physical,
             device,
             graphics_queue,
+            _debug_callback: debug_callback,
         })
     }
 

@@ -174,21 +174,21 @@ pub fn load(
     // primitive is treated as a submesh to match the .obj format support.
     for m in document.meshes() {
         info!("mesh={}, name={:?}", m.index(), m.name());
-        for p in m.primitives() {
+        for primitive in m.primitives() {
             let benchmark = std::time::Instant::now();
 
             // Validate certain aspects of the glTF. These should include that
             // the number of positions is equal to the number of normals etc.
             // since we don't know how to interpret the data if they aren't
             // equal.
-            let (idx_count, vert_count) = validate(&p)?;
+            let (idx_count, vert_count) = validate(&primitive)?;
 
             // Create a reader for the data buffer
-            let reader = p.reader(|x| Some(&buffers[x.index()]));
+            let reader = primitive.reader(|x| Some(&buffers[x.index()]));
 
             // Read the indices and store them as 16 bits. There is a `into_u32`
             // provided in the glTF library but not one for 16 bits.
-            let mut import_indices: Vec<u16> = Vec::new();
+            let mut import_indices: Vec<u16> = Vec::with_capacity(idx_count);
             let idx_data =
                 reader.read_indices().ok_or(ImportError::NoIndices)?;
             match idx_data {
@@ -214,7 +214,8 @@ pub fn load(
             }
 
             // Create an import vertex buffer to build up the other data
-            let mut import_vertices: Vec<ImportVertex> = Vec::new();
+            let mut import_vertices: Vec<ImportVertex> =
+                Vec::with_capacity(vert_count);
 
             // Read and store positions into the import vertex buffer, scaling
             // if needed
@@ -262,6 +263,26 @@ pub fn load(
                 }
             }
 
+            // Read and store the zone masks if they exist
+            let has_masks = {
+                // The glTF library does not have a reader function for this
+                // custom attribute so the code is a bit more verbose and
+                // mostly in a helper function.
+                // The attribute name must start with an underbar per glTF
+                // rules but that must not be passed to the library for it to
+                // find the attribute.
+                const ATTRIB: &str = "ZONEMASK";
+                primitive
+                    .get(&Semantic::Extras(ATTRIB.to_string())) //
+                    .map_or(false, |accessor| {
+                        read_zone_masks(
+                            accessor,
+                            &buffers,
+                            &mut import_vertices,
+                        )
+                    })
+            };
+
             // Read and store the joints if they exist
             if let Some(joint_data) = reader.read_joints(0) {
                 let ReadJoints::U8(joint_it) = joint_data else {
@@ -308,18 +329,36 @@ pub fn load(
                     &mut import_vertices,
                 );
             }
+            if has_masks {
+                info!("Processing zone masks");
+                let _face_masks = super::util::calculate_masks(
+                    &import_indices,
+                    &import_vertices,
+                );
+                // FIXME This doesn't do anything at the moment.
+                // Here is some code for testing
+                /*
+                let new_indices = super::util::mask_indices(
+                    &import_indices,
+                    &face_masks,
+                    0x08_u32,
+                );
+                debug!("new_indices={:?}", new_indices);
+                import_indices = new_indices;
+                */
+            }
 
             // Collect information
             let vertex_count = i32::try_from(vert_count)
                 .map_err(|_| RhError::VertexCountTooLarge)?;
-            let index_count = u32::try_from(idx_count)
+            let index_count = u32::try_from(import_indices.len())
                 .map_err(|_| RhError::IndexCountTooLarge)?;
             submeshes.push(Submesh {
                 index_count,
                 first_index,
                 vertex_offset,
                 vertex_count,
-                material_id: p.material().index().unwrap_or(0),
+                material_id: primitive.material().index().unwrap_or(0),
             });
 
             // Collect into the output struct
@@ -341,6 +380,55 @@ pub fn load(
         },
         order_option: import_options.order_option.clone(),
     })
+}
+
+/// Helper to read custom zone mask vertex attributes. Returns true if zone
+/// masks were present and processed.
+fn read_zone_masks(
+    accessor: gltf::Accessor,
+    buffers: &[Data],
+    output: &mut [ImportVertex],
+) -> bool {
+    use gltf::accessor::{DataType, Iter};
+    match accessor.data_type() {
+        DataType::U32 => {
+            // This attribute acts as a bitmask so u32 format is strongly
+            // preferred but possibly not allowed by the glTF standard?
+            // If so, i32 would be the next best choice... but see below.
+            debug!("Custom vertex attribute as u32");
+            Iter::<u32>::new(
+                accessor, //
+                |x| Some(&buffers[x.index()]),
+            )
+            .map_or(false, |it| {
+                for (i, data) in it.enumerate() {
+                    output[i].mask = data;
+                }
+                true
+            })
+        }
+        DataType::F32 => {
+            // This attribute acts as a bitmask so u32 format is strongly
+            // preferred but Blender always seems to export as f32. Since
+            // this function does not return errors, set output to 0 if
+            // conversion is unclear.
+            debug!("Custom vertex attribute as f32");
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            Iter::<f32>::new(
+                accessor, //
+                |x| Some(&buffers[x.index()]),
+            )
+            .map_or(false, |it| {
+                for (i, data) in it.enumerate() {
+                    let data = data.floor().max(0_f32);
+                    let data = if data > 16_777_216_f32 { 0_f32 } else { data };
+                    output[i].mask = data as u32;
+                }
+                true
+            })
+        }
+        _ => false,
+    }
 }
 
 fn load_materials(
@@ -535,7 +623,7 @@ fn load_skeleton(
         }
 
         // Make sure root node is in joint tree without disturbing it
-        if joint_tree.get(&root_index).is_none() {
+        if !joint_tree.contains_key(&root_index) {
             if let Some(node_info) = full_tree.get(&root_index) {
                 debug!(
                     "Adding root node {} for skin {}",

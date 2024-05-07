@@ -23,8 +23,8 @@ opt-level = 1
 
 [lints.clippy]
 enum_glob_use = "deny"
-pedantic = "deny"
-nursery = "deny"
+pedantic = { level = "deny", priority = -1 }
+nursery = { level ="deny", priority = -1 }
 string_to_string = "deny"
 panic = "deny"
 double_must_use = "allow"

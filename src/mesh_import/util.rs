@@ -29,8 +29,8 @@ fn calculate_face_normals(
     face_normals
 }
 
-/// Calculate normals. This is intended for importing meshes that do not contain
-/// normals, but it is inefficent and may not be accurate. It is highly
+/// Calculates normals. This is intended for importing meshes that do not
+/// contain normals, but it is inefficent and may not be accurate. It is highly
 /// recommended that meshes containing normals be used instead.
 ///
 /// # Panics
@@ -68,4 +68,39 @@ fn connected_faces(indices: &[u16], vertex_index: u16) -> Vec<usize> {
         }
     }
     faces
+}
+
+/// Calculates the masks for faces (triangles) from the vertex masks.
+#[must_use]
+pub fn calculate_masks(indices: &[u16], vertices: &[ImportVertex]) -> Vec<u32> {
+    let mut face_masks = Vec::with_capacity(indices.len() / 3);
+    for (i0, i1, i2) in indices.iter().tuples() {
+        let m0 = vertices[*i0 as usize].mask;
+        let m1 = vertices[*i1 as usize].mask;
+        let m2 = vertices[*i2 as usize].mask;
+        face_masks.push(m0 | m1 | m2);
+    }
+    face_masks
+}
+
+/// Calculates list of indices from an original with zone masking
+#[must_use]
+#[allow(dead_code)]
+pub fn mask_indices(
+    indices: &[u16],
+    face_masks: &[u32],
+    zone_mask: u32,
+) -> Vec<u16> {
+    // Maxiumum length of output list is the length of the input list.
+    // Reserving space for that probably won't hurt.
+    let mut indices_out = Vec::with_capacity(indices.len());
+    for ((i0, i1, i2), face_mask) in indices.iter().tuples().zip(face_masks) {
+        if (face_mask & zone_mask) == 0 {
+            // Not masked out so put it in the output list
+            indices_out.push(*i0);
+            indices_out.push(*i1);
+            indices_out.push(*i2);
+        }
+    }
+    indices_out
 }
