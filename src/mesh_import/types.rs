@@ -47,14 +47,16 @@ pub struct ImportOptions {
     pub scale: f32,
     pub swizzle: bool,
     pub order_option: Option<Vec<usize>>,
+    pub zone_mask: u32,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
         Self {
-            scale: 1.0f32,
+            scale: 1.0_f32,
             swizzle: true,
             order_option: None,
+            zone_mask: 0_u32,
         }
     }
 }

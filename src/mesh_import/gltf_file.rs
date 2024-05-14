@@ -331,21 +331,16 @@ pub fn load(
             }
             if has_masks {
                 info!("Processing zone masks");
-                let _face_masks = super::util::calculate_masks(
+                let face_masks = super::util::calculate_masks(
                     &import_indices,
                     &import_vertices,
                 );
-                // FIXME This doesn't do anything at the moment.
-                // Here is some code for testing
-                /*
                 let new_indices = super::util::mask_indices(
                     &import_indices,
                     &face_masks,
-                    0x08_u32,
+                    import_options.zone_mask,
                 );
-                debug!("new_indices={:?}", new_indices);
                 import_indices = new_indices;
-                */
             }
 
             // Collect information
