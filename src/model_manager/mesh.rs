@@ -5,6 +5,7 @@ use crate::{
 
 pub struct Mesh {
     pub submeshes: Vec<Submesh>,
+    pub joint_count: u32,
 }
 
 /// Convert a batch of meshes into the format needed by the Model Manager
@@ -48,7 +49,7 @@ pub fn convert_batch_meshes(
         }
 
         // Re-arrange the submeshes if an order was provided
-        let mesh = {
+        let ordered_submeshes = {
             if let Some(order) = &mesh_loaded.order_option {
                 let mut reorder = Vec::new();
                 for i in order {
@@ -58,12 +59,15 @@ pub fn convert_batch_meshes(
                         Err(RhError::IndexTooLarge)?;
                     }
                 }
-                Mesh { submeshes: reorder }
+                reorder
             } else {
-                Mesh { submeshes }
+                submeshes
             }
         };
-        meshes.push(mesh);
+        meshes.push(Mesh {
+            submeshes: ordered_submeshes,
+            joint_count: mesh_loaded.joint_count,
+        });
 
         // Update material id offset. Normally there will be one per
         // submesh, but use the count from the material file in case it

@@ -154,7 +154,7 @@ where
 ///
 /// # Errors
 /// May return `RhError`
-//#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_lines)]
 pub fn load(
     path: &Path,
@@ -164,8 +164,10 @@ pub fn load(
 ) -> Result<MeshLoaded, RhError> {
     let scale = import_options.scale;
     let mut submeshes = Vec::new();
-    let mut first_index = 0u32;
-    let mut vertex_offset = 0i32;
+    let mut first_index = 0_u32;
+    let mut vertex_offset = 0_i32;
+    let mut joint_id_max = 0_u8;
+    let mut has_joints = false;
 
     // Load the gltf file and mesh data but not the textures
     let (document, buffers) = load_impl(path)?;
@@ -284,12 +286,14 @@ pub fn load(
             };
 
             // Read and store the joints if they exist
+            let mut sub_id_max = 0_u8;
             if let Some(joint_data) = reader.read_joints(0) {
                 let ReadJoints::U8(joint_it) = joint_data else {
                     // Could try to fit these into u8 but if they fit that
                     // would have probably been used by the file
                     return Err(ImportError::BigJointIndices)?;
                 };
+                has_joints = true;
                 let weight_data = reader
                     .read_weights(0)
                     .ok_or(ImportError::NoWeights)?
@@ -297,8 +301,18 @@ pub fn load(
                 for (i, (id_array, weights)) in
                     joint_it.zip(weight_data).enumerate()
                 {
-                    trace!("Joint ids={:?} weights={:?}", id_array, weights);
+                    sub_id_max = sub_id_max
+                        .max(id_array[0].max(
+                            id_array[1].max(id_array[2].max(id_array[3])),
+                        ));
                     let sum: f32 = weights.iter().sum();
+                    trace!(
+                        "Joint ids={:?} weights={:?} id_max={} weight_sum={}",
+                        id_array,
+                        weights,
+                        sub_id_max,
+                        sum
+                    );
                     if (sum - 1.0_f32).abs() > 0.02_f32 {
                         warn!("Vertex {i} weights aren't normalized={sum}");
                     }
@@ -307,6 +321,11 @@ pub fn load(
                         import_vertices[i].weights = weights;
                     }
                 }
+                joint_id_max = joint_id_max.max(sub_id_max);
+                debug!(
+                    "sub_id_max={}, joint_id_max={}",
+                    sub_id_max, joint_id_max
+                );
             }
 
             // Validate that there is the expected amount of information
@@ -367,6 +386,18 @@ pub fn load(
         }
     }
 
+    // Joint count is assumed to be one more than the maximum joint id found
+    // across all submeshes, if there was any joint data at all
+    let joint_count = {
+        #[allow(clippy::cast_lossless)]
+        if has_joints {
+            joint_id_max as u32 + 1
+        } else {
+            0
+        }
+    };
+    info!("joint_count={}", joint_count);
+
     Ok(MeshLoaded {
         submeshes,
         materials: {
@@ -374,6 +405,7 @@ pub fn load(
             load_materials(base_path, &document)
         },
         order_option: import_options.order_option.clone(),
+        joint_count,
     })
 }
 

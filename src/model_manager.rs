@@ -11,4 +11,3 @@ pub use dvb_wrapper::DvbWrapper;
 #[allow(clippy::module_name_repetitions)]
 pub use manager::Manager as ModelManager;
 pub use material::TexMaterial;
-pub use model::JointTransforms;

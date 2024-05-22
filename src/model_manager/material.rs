@@ -9,9 +9,7 @@ use vulkano::{
     Validated,
 };
 
-// FIXME find a better place for this
-/// Binds diffuse texture to first binding slot
-const DIFFUSE_TEX_BINDING: u32 = 0;
+use super::layout;
 
 /// Material with loaded texture not yet in a descriptor set
 #[allow(clippy::module_name_repetitions)]
@@ -46,7 +44,7 @@ pub fn tex_to_pbr(
             set_allocator,
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
-                DIFFUSE_TEX_BINDING,
+                layout::DIFFUSE_TEX_BINDING,
                 tex_material.texture.clone(),
                 sampler.clone(),
             )],

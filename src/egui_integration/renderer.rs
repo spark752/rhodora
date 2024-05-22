@@ -233,7 +233,6 @@ impl Renderer {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                // FIXME Guessing at these values
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
@@ -479,7 +478,7 @@ impl Renderer {
                         .unwrap(); // `Box<ValidationError>`
                 }
                 Primitive::Callback(_callback) => {
-                    // FIXME Figure this out
+                    // Not sure what this is but it hasn't happened yet
                     error!("RENDER CALLBACK ATTEMPTED");
                 }
             }

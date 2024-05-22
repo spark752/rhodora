@@ -66,6 +66,7 @@ pub struct MeshLoaded {
     pub submeshes: Vec<Submesh>,
     pub materials: Vec<ImportMaterial>,
     pub order_option: Option<Vec<usize>>,
+    pub joint_count: u32,
 }
 
 /// Intermediate vertex format for interleaved data

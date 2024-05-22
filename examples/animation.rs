@@ -7,7 +7,6 @@ use rhodora::{
     egui_integration::Gui,
     keyboard::Keyboard,
     mesh_import::ImportOptions,
-    model_manager::JointTransforms,
     pbr_lights::PbrLights,
     util, vk_window,
 };
@@ -254,15 +253,15 @@ fn main() {
                     let time = elapsed.as_secs_f32();
                     let current_time =
                         time % (animations[a_index].max_time + 0.2_f32);
-
-                    let mut bone_stuff = JointTransforms::default();
+                    let mut joint_transforms =
+                        boss.model_manager.default_joint_transforms(0);
                     rhodora::animation::animate(
                         &skeletons[0],
                         &animations[a_index],
-                        &mut bone_stuff.0,
+                        &mut joint_transforms,
                         current_time,
                     );
-                    boss.model_manager.update_joints(0, bone_stuff);
+                    boss.model_manager.update_joints(0, &joint_transforms);
                 }
             }
 

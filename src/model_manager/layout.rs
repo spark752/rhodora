@@ -24,11 +24,14 @@ use vulkano::{
 };
 
 #[allow(unused_imports)]
-use log::debug;
+use log::{debug, error, info, warn};
 
 use crate::rh_error::RhError;
 
 use super::material::PbrMaterial;
+
+pub const VERTEX_BINDING: u32 = 0;
+pub const DIFFUSE_TEX_BINDING: u32 = 0;
 
 /// Push constant data for the main rendering pass fragment shader
 ///
@@ -73,17 +76,9 @@ impl From<&PbrMaterial> for PushFragData {
 #[derive(vulkano::buffer::BufferContents, Clone, Copy, Default)]
 #[repr(C)]
 pub struct PushVertData {
-    pub model_index: u32,
-    pub pad: [u32; 3], // Pad out to 16 bytes
-}
-
-impl From<u32> for PushVertData {
-    fn from(i: u32) -> Self {
-        Self {
-            model_index: i,
-            ..Default::default()
-        }
-    }
+    pub matrix_index: u32,
+    pub joint_data_offset: u32,
+    pub pad: [u32; 2], // Pad out to 16 bytes
 }
 
 // Simple compile time check to make sure things fit
@@ -96,14 +91,9 @@ pub const VERT_PUSH_SIZE: u32 = size_of::<PushVertData>() as u32;
 pub const VERT_PUSH_OFFSET: u32 = 0;
 pub const FRAG_PUSH_OFFSET: u32 = VERT_PUSH_SIZE;
 
-pub const JOINTS_ELEMENTS: usize = 32;
 pub const LIGHTS_ELEMENTS: usize = 4;
 
-#[derive(vulkano::buffer::BufferContents, Clone, Copy)]
-#[repr(C)]
-pub struct Joints {
-    pub joints: [[[f32; 4]; 2]; JOINTS_ELEMENTS], // Not set from a GLM type
-}
+pub type Mat2x4 = [[f32; 4]; 2];
 
 #[derive(vulkano::buffer::BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -121,14 +111,22 @@ pub struct Lighting {
 //
 // NOTE: Set values can not be changed without changing `pipeline_create_info`
 // because the actual assignment is based on a vec created there.
-pub const PASS_SET: u32 = 0; // Common to the entire rendering pass
+
+// Common to the entire rendering pass:
+pub const PASS_SET: u32 = 0;
 pub const MATRIX_BINDING: u32 = 0;
 pub const LIGHTS_BINDING: u32 = 1;
 
-pub const MODEL_SET: u32 = 1; // Common to one model in the pass
-pub const MODEL_BINDING: u32 = 0;
+// The next level was originally "MODEL_PASS" and was common to one model in
+// the pass. However this was only being used for joint transforms which are
+// now stored in an SSBO and are actually per pass. This could be moved into
+// "PASS_SET" but is kept seperate for now since it will hopefully move to a
+// compute shader in the future.
+pub const JOINTS_SET: u32 = 1;
+pub const JOINTS_BINDING: u32 = 0;
 
-pub const SUBMESH_SET: u32 = 2; // Common to one submesh in the pass
+// Common to one submesh in the pass:
+pub const SUBMESH_SET: u32 = 2;
 pub const TEX_BINDING: u32 = 0;
 
 /// Returns a struct for creating a descriptor set layout for things that
@@ -157,7 +155,7 @@ fn create_submesh_set_info() -> DescriptorSetLayoutCreateInfo {
 /// Projection matrix will be in a uniform buffer at bind point
 /// `MATRIX_BINDING` (probably 0)
 ///
-/// Lights will be in a uniform buffer at bind point `LAYOUT_LIGHTS_BINDING`
+/// Lights will be in a uniform buffer at bind point `LIGHTS_BINDING`
 /// (probably 1)
 fn create_pass_set_info() -> DescriptorSetLayoutCreateInfo {
     let mut tree = BTreeMap::new();
@@ -186,11 +184,14 @@ fn create_pass_set_info() -> DescriptorSetLayoutCreateInfo {
 /// data
 fn create_model_set_info() -> DescriptorSetLayoutCreateInfo {
     let mut tree = BTreeMap::new();
+
+    // Joints for vertex shader in a SSBO
     let mut bind = DescriptorSetLayoutBinding::descriptor_type(
-        DescriptorType::UniformBuffer,
+        DescriptorType::StorageBuffer,
     );
     bind.stages = ShaderStages::VERTEX;
-    tree.insert(MODEL_BINDING, bind);
+    tree.insert(JOINTS_BINDING, bind);
+
     DescriptorSetLayoutCreateInfo {
         bindings: tree,
         ..Default::default()
@@ -321,16 +322,24 @@ impl Writer {
         // the SSBO. Therefore there is no sized type for the layout.
         let matrix_buffer = {
             let len = matrices.len() as u64;
+            if len == 0 {
+                error!("matrix_buffer has no data");
+            }
             let buffer = self.ssbo_allocator.allocate_slice(len)?;
             buffer.write()?.copy_from_slice(matrices);
             buffer
         };
 
+        //      layout(set = 0, binding = 1) uniform Lighting {
+        //          vec4 ambient;
+        //          vec4 lights[4];
+        //      } vpl;
         let lights_buffer = {
             let buffer = self.ubo_allocator.allocate_sized()?;
             *buffer.write()? = *lighting;
             buffer
         };
+
         Ok(PersistentDescriptorSet::new(
             desc_set_allocator,
             Arc::clone(layout),
@@ -343,29 +352,41 @@ impl Writer {
         .map_err(Validated::unwrap)?)
     }
 
-    /// Writes to the buffers for the `MODEL_SET`
+    /// Writes to the buffers for the `JOINTS_SET`
     ///
     /// # Errors
     /// May return `RhError`
     ///
     /// # Panics
     /// Will panic if a `vulkano::ValidationError` is returned by Vulkan.
-    pub fn model_set(
+    pub fn joints_set(
         &self,
         desc_set_allocator: &StandardDescriptorSetAllocator,
         pipeline_layout: &Arc<PipelineLayout>,
-        joints: &Joints,
+        joints: &[Mat2x4], // Slice of 2x4 matrices holding dual quaternions
     ) -> Result<Arc<PersistentDescriptorSet>, RhError> {
-        let layout = descriptor_set_layout(pipeline_layout, MODEL_SET)?;
+        let layout = descriptor_set_layout(pipeline_layout, JOINTS_SET)?;
+
+        // Joints are now in an SSBO so there doesn't need to be a fixed size
+        //      layout(set = 1, binding = 0) buffer Joints {
+        //          mat2x4 joints[];
+        //      };
+        // Additionaly the push constant "joint_data_offset" is used to index
+        // within this array so that the joints for one model be part of a
+        // larger buffer.
         let joints_buffer = {
-            let buffer = self.ubo_allocator.allocate_sized()?;
-            *buffer.write()? = *joints;
+            let len = joints.len() as u64;
+            if len == 0 {
+                error!("joints_buffer has no data");
+            }
+            let buffer = self.ssbo_allocator.allocate_slice(len)?;
+            buffer.write()?.copy_from_slice(joints);
             buffer
         };
         Ok(PersistentDescriptorSet::new(
             desc_set_allocator,
             Arc::clone(layout),
-            [WriteDescriptorSet::buffer(MODEL_BINDING, joints_buffer)],
+            [WriteDescriptorSet::buffer(JOINTS_BINDING, joints_buffer)],
             [],
         )
         .map_err(Validated::unwrap)?)

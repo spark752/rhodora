@@ -1,12 +1,13 @@
 use super::{
     dvb_wrapper::DvbWrapper,
-    layout::{self, PushFragData, PushVertData, Writer},
+    layout::{self, Mat2x4, PushFragData, PushVertData, Writer},
     material::{self, PbrMaterial, TexMaterial},
     mesh,
-    model::{JointTransforms, Model},
+    model::Model,
     pipeline::Pipeline,
 };
 use crate::{
+    dualquat::DualQuat,
     dvb::DeviceVertexBuffers,
     mesh_import::{Batch, ImportMaterial, MeshLoaded, Style},
     pbr_lights::PbrLightTrait,
@@ -37,10 +38,10 @@ use vulkano::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-const VERTEX_BINDING: u32 = 0;
-
 type ModelIndex = usize;
 type MatrixIndex = u32;
+type JointDataOffset = u32;
+type Map = HashMap<ModelIndex, (MatrixIndex, JointDataOffset)>;
 
 /// Combines the pipeline with the buffers and a list of models that use them
 struct Conduit {
@@ -53,6 +54,7 @@ pub struct Manager {
     models: Vec<Model>,
     conduits: Vec<Conduit>,
     materials: Vec<PbrMaterial>,
+    joint_transforms: Vec<DualQuat>,
     texture_manager: Arc<TextureManager>,
     device: Arc<Device>,
     mem_allocator: Arc<StandardMemoryAllocator>,
@@ -116,6 +118,7 @@ impl Manager {
             models: Vec::new(),
             conduits: Vec::new(),
             materials: Vec::new(),
+            joint_transforms: Vec::new(),
             texture_manager,
             device: Arc::clone(&device_access.device),
             mem_allocator,
@@ -241,6 +244,7 @@ impl Manager {
         let meshes = mesh::convert_batch_meshes(&batch.meshes)?;
         let material_offset = self.materials.len();
         for mesh in meshes {
+            let joint_count = mesh.joint_count as usize;
             ret.push(self.models.len());
             self.models.push(Model {
                 mesh,
@@ -248,8 +252,12 @@ impl Manager {
                 material_offset,
                 visible: false, // To prevent model from popping up at origin
                 matrix: glm::Mat4::identity(),
-                joints: JointTransforms::default(),
+                joint_data_offset: self.joint_transforms.len(),
+                joint_count,
             });
+            for _ in 0..joint_count {
+                self.joint_transforms.push(DualQuat::default());
+            }
         }
 
         // Process the materials, loading all textures if required
@@ -380,25 +388,48 @@ impl Manager {
     ///
     /// # Panics
     /// Will panic if the index is out of range
-    pub fn update_joints(&mut self, index: usize, joints: JointTransforms) {
-        self.models[index].joints = joints;
+    pub fn update_joints(&mut self, model_index: usize, joints: &[DualQuat]) {
+        let start = self.models[model_index].joint_data_offset;
+        let count = self.models[model_index].joint_count.min(joints.len());
+        self.joint_transforms[start..(count + start)]
+            .copy_from_slice(&joints[0..count]);
+    }
+
+    /// Return a properly sized vector of default joint transforms for a given
+    /// model. Another temporary API.
+    ///
+    /// # Panics
+    /// Will panic if the index is out of range
+    pub fn default_joint_transforms(
+        &self,
+        model_index: usize,
+    ) -> Vec<DualQuat> {
+        let count = self.models[model_index].joint_count;
+        vec![DualQuat::default(); count]
     }
 
     /// Iterates through all models. If the model should be drawn, its
-    /// model-view matrix is calculated and stored. The index of that matrix is
-    /// then added to a map with the `model_index` as the key. This allows a
-    /// later drawing step to:
+    /// model-view matrix and joint transforms (for a skinned mesh) are
+    /// calculated and stored. The index of that matrix and start index
+    /// (data offset) of the joint transforms are then added to a map with
+    /// the `model_index` as the key.
+    ///
+    /// This allows a later drawing step to:
     ///
     /// 1. Check if a particular `model_index` should be drawn by checking if
     /// it is in the map.
     ///
-    /// 2. If in the map, get the corresponding `matrix_index` and pass it
-    /// to the vertex shader.
+    /// 2. If in the map, get the corresponding `matrix_index` and
+    /// `joint_data_offset` and `joint_count` and pass them to the vertex
+    /// shader.
     ///
     /// 3. The shader can then use the `matrix_index` to get the model-view
     /// matrix from an array within a SSBO. The shader doesn't need to know
     /// about the `model_index` and the SSBO only needs enough data to cover
     /// models actually being drawn.
+    ///
+    /// 4. For a skinned mesh, the shader can use the `joint_data_offset`
+    /// and `joint_count` to get joint transforms from another SSBO.
     ///
     /// Note that the matrices are returned in a `Vec` with index 0 containing
     /// the projection matrix. This is followed by the model-view matrices.
@@ -414,19 +445,28 @@ impl Manager {
     fn create_map(
         &mut self,
         camera: &impl CameraTrait,
-    ) -> (HashMap<ModelIndex, MatrixIndex>, Vec<glm::Mat4>) {
+    ) -> (Map, Vec<glm::Mat4>, Vec<Mat2x4>) {
+        let mut matrix_index: MatrixIndex = 0;
+        let mut joint_data_offset: JointDataOffset = 0;
         let mut map = HashMap::new();
+        let mut joints: Vec<Mat2x4> = Vec::new();
         let mut matrices = vec![camera.proj_matrix()];
-        let mut matrix_index: u32 = 0;
+
         let view_matrix = camera.view_matrix();
         for (i, model) in self.models.iter().enumerate() {
             if model.visible {
+                map.insert(i, (matrix_index, joint_data_offset));
+                let start = model.joint_data_offset;
+                let end = start + model.joint_count;
+                for j in start..end {
+                    joints.push(self.joint_transforms[j].into());
+                    joint_data_offset += 1;
+                }
                 matrices.push(view_matrix * model.matrix);
-                map.insert(i, matrix_index);
                 matrix_index += 1;
             }
         }
-        (map, matrices)
+        (map, matrices, joints)
     }
 
     /// Renders all the models. Provide a command buffer which has had
@@ -445,7 +485,12 @@ impl Manager {
         lights: &impl PbrLightTrait,
     ) -> Result<(), RhError> {
         // Do culling and update matrices
-        let (map, matrices) = self.create_map(camera);
+        let (map, matrices, joints) = self.create_map(camera);
+        if matrices.len() < 2 {
+            // There should always be a projection matrix added but if there
+            // is nothing else then there is nothing to draw.
+            return Ok(());
+        }
 
         // Bind things that are common to the entire pass.
         // This includes a SSBO containing the projection matrix and an
@@ -468,9 +513,26 @@ impl Manager {
         )
         .unwrap(); // `Box<ValidationError>`
 
+        // This also include the joint transforms for skinned models. These
+        // were previously done per model and therefore are in a separate
+        // descriptor set. They are now done as an SSBO containing all the
+        // joints for all non-culled skinned models.
+        let desc_set = self.writer.joints_set(
+            desc_set_allocator,
+            &self.pipeline_layout,
+            &joints,
+        )?;
+        cbb.bind_descriptor_sets(
+            PipelineBindPoint::Graphics,
+            Arc::clone(&self.pipeline_layout),
+            layout::JOINTS_SET,
+            desc_set,
+        )
+        .unwrap(); // This is a Box<ValidationError>
+
         // Draw each conduit
         for conduit in &self.conduits {
-            self.draw_conduit(conduit, cbb, desc_set_allocator, &map)?;
+            self.draw_conduit(conduit, cbb, &map);
         }
         Ok(())
     }
@@ -485,12 +547,11 @@ impl Manager {
         &self,
         conduit: &Conduit,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        desc_set_allocator: &StandardDescriptorSetAllocator,
-        map: &HashMap<ModelIndex, MatrixIndex>,
-    ) -> Result<(), RhError> {
+        map: &Map,
+    ) {
         // Avoid binding if there is nothing to do
         if conduit.model_indices.is_empty() {
-            return Ok(());
+            return;
         }
 
         // Bind the pipeline and device vertex buffers
@@ -502,22 +563,20 @@ impl Manager {
         // checked somewhere.
         for model_index in &conduit.model_indices {
             // If this model is on the list of things to draw, do so
-            if let Some(matrix_index) = map.get(model_index) {
+            if let Some((matrix_index, joint_data_offset)) =
+                map.get(model_index)
+            {
                 self.draw_impl(
                     &self.models[*model_index],
                     *matrix_index,
+                    *joint_data_offset,
                     cbb,
-                    desc_set_allocator,
-                )?;
+                );
             }
         }
-        Ok(())
     }
 
     /// Helper function used for drawing models
-    ///
-    /// # Errors
-    /// May return `RhError`
     ///
     /// # Panics
     /// Will panic if a `vulkano::ValidationError` is returned by Vulkan
@@ -525,31 +584,14 @@ impl Manager {
         &self,
         model: &Model,
         matrix_index: MatrixIndex,
+        joint_data_offset: JointDataOffset,
         cbb: &mut AutoCommandBufferBuilder<T>,
-        desc_set_allocator: &StandardDescriptorSetAllocator,
-    ) -> Result<(), RhError> {
-        // FIXME
-        // Model matrix was moved into an array but joints have not been.
-        // And they are being set even if this model doesn't have joints.
-        let desc_set = self.writer.model_set(
-            desc_set_allocator,
-            &self.pipeline_layout,
-            &layout::Joints {
-                joints: model.joints.into(),
-            },
-        )?;
-
-        // CommandBufferBuilder should have a render pass started
-        cbb.bind_descriptor_sets(
-            PipelineBindPoint::Graphics,
-            Arc::clone(&self.pipeline_layout),
-            layout::MODEL_SET, // starting set, higher values also changed
-            desc_set,
-        )
-        .unwrap(); // This is a Box<ValidationError>
-
+    ) {
         // All of the submeshes are in the buffers and share a model matrix
-        // but they do need separate textures.
+        // etc. but they do need separate materials and textures.
+        // Previously there were per model bindings done here but that is no
+        // longer needed. Eliminating the per submesh bindings should be the
+        // next step.
         for sub in &model.mesh.submeshes {
             // Get the material
             let material = {
@@ -572,7 +614,11 @@ impl Manager {
             .push_constants::<PushVertData>(
                 Arc::clone(&self.pipeline_layout),
                 layout::VERT_PUSH_OFFSET,
-                matrix_index.into(),
+                layout::PushVertData {
+                    matrix_index,
+                    joint_data_offset,
+                    ..Default::default()
+                },
             )
             .unwrap() // `Box<ValidationError>`
             .push_constants::<PushFragData>(
@@ -592,7 +638,6 @@ impl Manager {
             )
             .unwrap(); // `Box<ValidationError>`
         }
-        Ok(())
     }
 }
 
@@ -612,7 +657,7 @@ fn bind_dvb<T>(
         dvb: &DeviceVertexBuffers<U>,
     ) {
         cbb.bind_vertex_buffers(
-            VERTEX_BINDING,          // probably 0
+            layout::VERTEX_BINDING,  // probably 0
             dvb.interleaved.clone(), // struct containing Arcs
         )
         .unwrap() // `Box<ValidationError>`

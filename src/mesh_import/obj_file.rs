@@ -199,5 +199,6 @@ pub fn process_obj(
         submeshes,
         materials,
         order_option: import_options.order_option.clone(),
+        joint_count: 0, // Not supported by this format
     })
 }

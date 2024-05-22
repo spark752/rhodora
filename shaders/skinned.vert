@@ -1,7 +1,4 @@
 #version 460
-// #define MAX_JOINTS when compiling
-// FIXME do that thing above
-#define MAX_JOINTS 32
 
 // Vertex format
 layout(location = 0) in vec3 position;
@@ -21,12 +18,13 @@ layout(set = 0, binding = 0) buffer Matrices {
     mat4 model_view[];
 };
 
-layout(set = 1, binding = 0) uniform Joints {
-    mat2x4 joints[MAX_JOINTS];
+layout(set = 1, binding = 0) buffer Joints {
+    mat2x4 joints[];
 };
 
 layout(push_constant, std430) uniform VertData {
    uint model_index;
+   uint joint_data_offset;
 };
 
 void main() {
@@ -34,10 +32,10 @@ void main() {
     f_tex_coord = tex_coord;
 
     // Find the relevant dual quaternions
-    mat2x4 dq0 = joints[joint_ids >> 24];
-    mat2x4 dq1 = joints[joint_ids >> 16 & 0xff];
-    mat2x4 dq2 = joints[joint_ids >> 8 & 0xff];
-    mat2x4 dq3 = joints[joint_ids & 0xff];
+    mat2x4 dq0 = joints[(joint_ids >> 24) + joint_data_offset];
+    mat2x4 dq1 = joints[(joint_ids >> 16 & 0xff) + joint_data_offset];
+    mat2x4 dq2 = joints[(joint_ids >> 8 & 0xff) + joint_data_offset];
+    mat2x4 dq3 = joints[(joint_ids & 0xff) + joint_data_offset];
 
     // Antipodality: quaternion q and -q represent the same rotation, but
     // one will blend correctly and the other will lead to nightmares
