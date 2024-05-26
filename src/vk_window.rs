@@ -1,4 +1,4 @@
-use crate::rh_error::RhError;
+use crate::{rh_error::RhError, validation, validation::RhDebugUtilsMessenger};
 use std::sync::Arc;
 use vulkano::{
     device::{
@@ -7,14 +7,7 @@ use vulkano::{
         QueueCreateInfo, QueueFlags,
     },
     format::{Format, FormatProperties},
-    instance::{
-        debug::{
-            DebugUtilsMessageSeverity, DebugUtilsMessageType,
-            DebugUtilsMessenger, DebugUtilsMessengerCallback,
-            DebugUtilsMessengerCallbackData, DebugUtilsMessengerCreateInfo,
-        },
-        Instance, InstanceCreateInfo, InstanceExtensions,
-    },
+    instance::{Instance, InstanceCreateInfo, InstanceExtensions},
     swapchain::{Surface, SurfaceCapabilities, SurfaceInfo},
     Validated, VulkanError, VulkanLibrary,
 };
@@ -39,7 +32,7 @@ pub struct VkWindow {
     physical: Arc<PhysicalDevice>,
     device: Arc<Device>,
     graphics_queue: Arc<Queue>,
-    _debug_callback: Option<DebugUtilsMessenger>,
+    _debug_callback: Option<RhDebugUtilsMessenger>,
 }
 
 impl VkWindow {
@@ -67,80 +60,28 @@ impl VkWindow {
 
         // vulkano 0.34 deprecates `vulkano_win` which was getting the required
         // extensions and gets them from `Surface` instead.
-        let required_extensions = InstanceExtensions {
+        let enabled_extensions = InstanceExtensions {
             ext_debug_utils: debug_layers,
             ..Surface::required_extensions(event_loop)
         };
         let instance = Instance::new(
             library,
             InstanceCreateInfo {
-                enabled_extensions: required_extensions,
+                enabled_extensions,
                 ..Default::default()
             },
         )
         .map_err(Validated::unwrap)?;
 
-        // Interface for Vulkan validation layers.
-        // DebugUtilsMessenger is unsafe so this block is required to be
-        // unsafe.
+        // Interface for Vulkan validation layers. This must be kept alive
+        // for the duration of VkWindow.
         let debug_callback = {
-            fn callback(
-                msg_severity: DebugUtilsMessageSeverity,
-                msg_type: DebugUtilsMessageType,
-                callback_data: &DebugUtilsMessengerCallbackData,
-            ) {
-                let name = callback_data.message_id_name.unwrap_or("unknown");
-                let ty = if msg_type.intersects(DebugUtilsMessageType::GENERAL)
-                {
-                    "general"
-                } else if msg_type.intersects(DebugUtilsMessageType::VALIDATION)
-                {
-                    "validation"
-                } else {
-                    "performance"
-                };
-                if msg_severity.intersects(DebugUtilsMessageSeverity::ERROR) {
-                    error!("{} {}: {}", name, ty, callback_data.message);
-                } else if msg_severity
-                    .intersects(DebugUtilsMessageSeverity::WARNING)
-                {
-                    warn!("{} {}: {}", name, ty, callback_data.message);
-                } else if msg_severity
-                    .intersects(DebugUtilsMessageSeverity::INFO)
-                {
-                    info!("{} {}: {}", name, ty, callback_data.message);
-                } else {
-                    debug!("{} {}: {}", name, ty, callback_data.message);
-                };
+            if debug_layers {
+                validation::validation_callback(Arc::clone(&instance))
+            } else {
+                None
             }
-            unsafe {
-                DebugUtilsMessenger::new(
-                    instance.clone(),
-                    DebugUtilsMessengerCreateInfo {
-                        message_severity: DebugUtilsMessageSeverity::ERROR
-                            | DebugUtilsMessageSeverity::WARNING
-                            | DebugUtilsMessageSeverity::INFO
-                            | DebugUtilsMessageSeverity::VERBOSE,
-                        message_type: DebugUtilsMessageType::GENERAL
-                            | DebugUtilsMessageType::VALIDATION
-                            | DebugUtilsMessageType::PERFORMANCE,
-                        ..DebugUtilsMessengerCreateInfo::user_callback(
-                            DebugUtilsMessengerCallback::new(
-                                |msg_severity, msg_type, callback_data| {
-                                    callback(
-                                        msg_severity,
-                                        msg_type,
-                                        &callback_data,
-                                    );
-                                },
-                            ),
-                        )
-                    },
-                )
-                .ok()
-            }
-        }; // unsafe block
-
+        };
         let size = LogicalSize::new(
             f64::from(properties.dimensions[0]),
             f64::from(properties.dimensions[1]),

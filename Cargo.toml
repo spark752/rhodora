@@ -30,6 +30,7 @@ panic = "deny"
 double_must_use = "allow"
 
 [dependencies]
+ash = "0.37.3"
 ahash = "0.8.1"
 bytemuck = "1.12.3"
 egui = "0.21.0"

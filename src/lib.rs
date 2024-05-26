@@ -15,5 +15,6 @@ pub mod rh_error;
 pub mod texture;
 pub mod types;
 pub mod util;
+pub mod validation;
 pub mod vertex;
 pub mod vk_window;
